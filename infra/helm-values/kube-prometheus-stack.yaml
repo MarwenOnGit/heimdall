@@ -1,0 +1,69 @@
+# Trimmed for a laptop: short retention, no persistence, and the control-plane
+# scrape targets that kind does not expose are turned off.
+fullnameOverride: kps
+
+kubeEtcd: {enabled: false}
+kubeControllerManager: {enabled: false}
+kubeScheduler: {enabled: false}
+kubeProxy: {enabled: false}
+
+kube-state-metrics:
+  # Export the service label of pods and deployments, so alert rules can
+  # report per service instead of per pod.
+  metricLabelsAllowlist:
+    - pods=[app.kubernetes.io/name]
+    - deployments=[app.kubernetes.io/name]
+
+prometheus:
+  prometheusSpec:
+    retention: 2d
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    # Pick up ServiceMonitors, PodMonitors and PrometheusRules from every
+    # namespace, not only the ones this chart creates.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+    resources:
+      requests: {cpu: 100m, memory: 400Mi}
+      limits: {memory: 1500Mi}
+
+grafana:
+  persistence: {enabled: false}
+  adminPassword: heimdall
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      access: proxy
+      url: http://loki.monitoring.svc:3100
+
+alertmanager:
+  alertmanagerSpec:
+    # Mounted at /etc/alertmanager/secrets/heimdall-alert-token/
+    secrets: [heimdall-alert-token]
+    resources:
+      requests: {cpu: 10m, memory: 32Mi}
+  config:
+    route:
+      receiver: "null"
+      group_by: [namespace, service, alertname]
+      routes:
+        - receiver: heimdall
+          matchers: ['heimdall = "true"']
+          group_wait: 10s
+          group_interval: 1m
+          repeat_interval: 4h
+    receivers:
+      - name: "null"
+      - name: heimdall
+        webhook_configs:
+          - url: http://heimdall.heimdall.svc:8000/alerts
+            send_resolved: true
+            http_config:
+              authorization:
+                type: Bearer
+                credentials_file: /etc/alertmanager/secrets/heimdall-alert-token/token

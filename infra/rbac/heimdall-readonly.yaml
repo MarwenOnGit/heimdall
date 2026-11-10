@@ -1,0 +1,60 @@
+# Identity used by the Investigator. Read-only, and no access to Secrets.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: heimdall-readonly
+  namespace: heimdall
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: heimdall-readonly
+  namespace: boutique
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, events, services, configmaps, persistentvolumeclaims]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: heimdall-readonly
+  namespace: boutique
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: heimdall-readonly
+subjects:
+  - kind: ServiceAccount
+    name: heimdall-readonly
+    namespace: heimdall
+---
+# Nodes are cluster-scoped, so they need a ClusterRole. Nothing else is
+# granted cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: heimdall-readonly-nodes
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: heimdall-readonly-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: heimdall-readonly-nodes
+subjects:
+  - kind: ServiceAccount
+    name: heimdall-readonly
+    namespace: heimdall

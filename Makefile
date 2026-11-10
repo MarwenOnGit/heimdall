@@ -6,6 +6,7 @@ help:
 	@echo "make up         create the cluster and install everything (idempotent)"
 	@echo "make down       delete the cluster and the local registry"
 	@echo "make test       unit tests"
+	@echo "make test-integration  RBAC and admission checks against the cluster"
 	@echo "make lint       ruff + mypy"
 
 preflight:
@@ -27,3 +28,7 @@ lint:
 	uv run ruff check .
 	uv run ruff format --check .
 	uv run mypy
+
+.PHONY: test-integration
+test-integration:
+	@infra/admission/tests/run.sh

@@ -1,0 +1,146 @@
+# Adds the app.kubernetes.io/name label to every Deployment and its pods.
+# The label is what alert rules, log labels and Heimdall use as `service`.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adservice
+  labels:
+    app.kubernetes.io/name: adservice
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: adservice
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shippingservice
+  labels:
+    app.kubernetes.io/name: shippingservice
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: shippingservice
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkoutservice
+  labels:
+    app.kubernetes.io/name: checkoutservice
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: checkoutservice
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: currencyservice
+  labels:
+    app.kubernetes.io/name: currencyservice
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: currencyservice
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emailservice
+  labels:
+    app.kubernetes.io/name: emailservice
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: emailservice
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: productcatalogservice
+  labels:
+    app.kubernetes.io/name: productcatalogservice
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: productcatalogservice
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app.kubernetes.io/name: frontend
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: frontend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendationservice
+  labels:
+    app.kubernetes.io/name: recommendationservice
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: recommendationservice
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgenerator
+  labels:
+    app.kubernetes.io/name: loadgenerator
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loadgenerator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cartservice
+  labels:
+    app.kubernetes.io/name: cartservice
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cartservice
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-cart
+  labels:
+    app.kubernetes.io/name: redis-cart
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis-cart
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paymentservice
+  labels:
+    app.kubernetes.io/name: paymentservice
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: paymentservice

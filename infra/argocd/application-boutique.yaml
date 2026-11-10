@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boutique
+  namespace: argocd
+spec:
+  project: boutique
+  source:
+    repoURL: http://gitea-http.gitea.svc:3000/heimdall/gitops.git
+    targetRevision: main
+    path: online-boutique
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: boutique
+  syncPolicy:
+    # No self-heal: a live mitigation by Heimdall must not be reverted by Argo
+    # before the reconciling PR is merged (spec section 10.3).
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - RespectIgnoreDifferences=true
+  # Restarting and scaling are not drift.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+        - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt

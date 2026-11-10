@@ -1,0 +1,35 @@
+# Single-pod Gitea on SQLite: no Postgres, no Valkey.
+replicaCount: 1
+strategy:
+  type: Recreate
+
+postgresql-ha: {enabled: false}
+postgresql: {enabled: false}
+valkey-cluster: {enabled: false}
+valkey: {enabled: false}
+
+persistence:
+  enabled: true
+  size: 2Gi
+
+resources:
+  requests: {cpu: 50m, memory: 128Mi}
+  limits: {memory: 512Mi}
+
+gitea:
+  admin:
+    existingSecret: gitea-admin
+    passwordMode: keepUpdated
+  config:
+    database: {DB_TYPE: sqlite3}
+    cache: {ADAPTER: memory}
+    session: {PROVIDER: memory}
+    queue: {TYPE: level}
+    server:
+      ROOT_URL: http://gitea-http.gitea.svc:3000/
+      DISABLE_SSH: true
+    service:
+      DISABLE_REGISTRATION: true
+    webhook:
+      # Allow webhooks to in-cluster (private) addresses, i.e. Argo CD.
+      ALLOWED_HOST_LIST: private

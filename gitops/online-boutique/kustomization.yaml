@@ -1,0 +1,25 @@
+# Online Boutique v0.10.7, with the changes Heimdall's environment needs.
+# upstream.yaml is the unmodified release manifest; every change is a patch.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: boutique
+
+resources:
+  - upstream.yaml
+
+images:
+  # Upstream uses the floating tag redis:alpine.
+  - name: redis
+    newTag: 8.10.3-alpine
+
+patches:
+  - path: labels.yaml
+  - path: redis-cart.yaml
+  - path: checkoutservice.yaml
+  # There is no load balancer in kind; the Service would stay Pending forever.
+  - patch: |-
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: frontend-external
+      $patch: delete
