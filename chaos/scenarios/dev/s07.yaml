@@ -1,12 +1,14 @@
 id: s07
-description: Redis is scaled to zero. cartservice starts failing, but it is a symptom.
+description: >-
+  Redis is scaled to zero. The visible symptoms are frontend errors and slow
+  cartservice calls, two hops away from the cause.
 difficulty: hard
 inject:
   - type: kubectl
     args: ["-n", "boutique", "scale", "deploy/redis-cart", "--replicas=0"]
 expected_alerts:
   - alertname: HighErrorRate
-    service: cartservice
+    service: frontend
 ground_truth:
   - category: dependency_down
     resource:
@@ -16,4 +18,4 @@ ground_truth:
 acceptable_fixes: [scale_deployment]
 recovery_condition:
   - 'kube_deployment_status_replicas_available{{namespace="boutique", deployment="redis-cart"}} == 1'
-  - 'heimdall:service_success_rate:ratio_rate2m{{service="cartservice"}} >= 0.99'
+  - 'heimdall:service_success_rate:ratio_rate2m{{service="frontend"}} >= 0.99'

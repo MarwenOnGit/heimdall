@@ -8,6 +8,26 @@ by the Kubernetes API server.
 
 The full design is in [heimdall-spec-v2.md](heimdall-spec-v2.md).
 
+## How it works
+
+An alert becomes an action only after passing several independent checks. The
+model proposes; it never acts directly. (This is the target design. See
+[Status](#status) for what is built.)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/pipeline-dark.png">
+  <img alt="From alert to verified action" src="docs/img/pipeline.png">
+</picture>
+
+## Lab environment
+
+Everything runs in one kind cluster on a laptop, built by `make up`.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/environment-dark.png">
+  <img alt="Heimdall lab environment" src="docs/img/environment.png">
+</picture>
+
 ## Status
 
 Work in progress, built milestone by milestone.
