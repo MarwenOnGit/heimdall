@@ -37,8 +37,11 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._reply(400, "invalid json\n")
         alerts = [
-            {"alertname": a.get("labels", {}).get("alertname"), "status": a.get("status"),
-             "labels": a.get("labels", {})}
+            {
+                "alertname": a.get("labels", {}).get("alertname"),
+                "status": a.get("status"),
+                "labels": a.get("labels", {}),
+            }
             for a in payload.get("alerts", [])
         ]
         print(json.dumps({"event": "alerts", "alerts": alerts}), flush=True)
