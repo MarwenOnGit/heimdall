@@ -63,7 +63,8 @@ watches=$(cat /proc/sys/fs/inotify/max_user_watches)
 if [ "$inst" -ge 512 ] && [ "$watches" -ge 524288 ]; then
   ok "inotify limits (${inst} instances, ${watches} watches)"
 else
-  bad "inotify limits too low (${inst} instances, ${watches} watches); run:
+  note "inotify limits are low (${inst} instances, ${watches} watches). If pods fail with
+       'too many open files', run:
        sudo sysctl fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288"
 fi
 

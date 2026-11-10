@@ -21,9 +21,14 @@ fi
 # --- cluster --------------------------------------------------------------
 if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
   log "creating kind cluster ${CLUSTER_NAME}"
+  # kind switches the current kubectl context; put the previous one back so
+  # other work on this machine is not redirected to this cluster.
+  prev_ctx="$(kubectl config current-context 2>/dev/null || true)"
   kind create cluster --name "$CLUSTER_NAME" --image "$KIND_NODE_IMAGE" \
     --config "$ROOT/infra/kind-config.yaml" --wait 120s
+  if [ -n "$prev_ctx" ]; then kubectl config use-context "$prev_ctx" >/dev/null; fi
 fi
+k wait --for=condition=Ready nodes --all --timeout=180s >/dev/null
 
 # Point every node at the registry under the name localhost:<port>, and attach
 # the registry to the kind network so nodes can reach it by container name.
@@ -53,5 +58,23 @@ EOF
 # --- namespaces -----------------------------------------------------------
 k apply -f "$ROOT/infra/namespaces.yaml" >/dev/null
 
-log "cluster ready"
+# --- alert token ----------------------------------------------------------
+# Shared by Alertmanager (sender) and Heimdall (receiver). Generated once.
+if ! k -n heimdall get secret heimdall-alert-token >/dev/null 2>&1; then
+  token="$(openssl rand -hex 32)"
+  ensure_secret heimdall heimdall-alert-token token "$token"
+  ensure_secret monitoring heimdall-alert-token token "$token"
+fi
+
+# --- metrics --------------------------------------------------------------
+helm_install kps monitoring kube-prometheus-stack "$PROM_STACK_REPO" "$PROM_STACK_VERSION" \
+  -f "$ROOT/infra/helm-values/kube-prometheus-stack.yaml"
+
+# --- temporary alert echo endpoint (replaced by Heimdall in M3) -----------
+k -n heimdall create configmap heimdall-echo --from-file="$ROOT/infra/echo/echo.py" \
+  --dry-run=client -o yaml | k apply -f - >/dev/null
+envsubst '${ECHO_IMAGE}' <"$ROOT/infra/echo/echo.yaml" | k apply -f - >/dev/null
+k -n heimdall rollout status deploy/heimdall --timeout=180s >/dev/null
+
+log "environment ready"
 k get nodes

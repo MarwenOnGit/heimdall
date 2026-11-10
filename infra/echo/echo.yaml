@@ -1,0 +1,62 @@
+# Temporary alert echo endpoint. It takes the name and port Heimdall will use,
+# so the Alertmanager route does not change when the real ingest replaces it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: heimdall
+  namespace: heimdall
+  labels: {app.kubernetes.io/name: heimdall, app.kubernetes.io/component: echo}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: heimdall}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: heimdall, app.kubernetes.io/component: echo}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: echo
+          image: ${ECHO_IMAGE}
+          command: ["python", "-u", "/app/echo.py"]
+          env:
+            - name: ALERT_TOKEN
+              valueFrom:
+                secretKeyRef: {name: heimdall-alert-token, key: token}
+          ports: [{containerPort: 8000, name: http}]
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 64Mi}
+          volumeMounts: [{name: app, mountPath: /app}]
+      volumes:
+        - name: app
+          configMap: {name: heimdall-echo}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: heimdall
+  namespace: heimdall
+spec:
+  selector: {app.kubernetes.io/name: heimdall}
+  ports: [{port: 8000, targetPort: http, name: http}]
+---
+# Only Alertmanager may reach the ingest port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: heimdall-ingress
+  namespace: heimdall
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: heimdall}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: alertmanager}
+      ports: [{port: 8000}]
