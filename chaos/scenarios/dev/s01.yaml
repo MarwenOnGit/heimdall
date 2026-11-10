@@ -1,0 +1,37 @@
+id: s01
+description: A commit points cartservice at a Redis address that does not exist.
+difficulty: medium
+inject:
+  - type: git_commit
+    message: "Move cartservice to the new Redis endpoint"
+    files:
+      online-boutique/overrides/cartservice-env.yaml: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: cartservice
+        spec:
+          template:
+            spec:
+              containers:
+                - name: server
+                  env:
+                    - name: REDIS_ADDR
+                      value: "redis-cart-v2:6379"
+    patches:
+      - overrides/cartservice-env.yaml
+expected_alerts:
+  - alertname: PodCrashLooping
+    service: cartservice
+ground_truth:
+  - category: bad_config
+    resource:
+      kind: Deployment
+      namespace: boutique
+      name: cartservice
+# The admission policy forbids the actor from changing env, so a live rollback
+# is not possible here: the fix has to go through git.
+acceptable_fixes: [open_pr]
+recovery_condition:
+  - 'kube_deployment_status_replicas_available{{namespace="boutique", deployment="cartservice"}} == 1'
+  - 'heimdall:service_success_rate:ratio_rate2m{{service="cartservice"}} >= 0.99'

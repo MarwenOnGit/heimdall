@@ -1,0 +1,41 @@
+id: s03
+description: A commit lowers the memory limit of {service} to {memory_mi}Mi, below what it needs.
+difficulty: easy
+parameters:
+  service:
+    choice: [recommendationservice, emailservice, adservice]
+  memory_mi:
+    int_range: [32, 48]
+inject:
+  - type: git_commit
+    message: "Right-size {service} memory"
+    files:
+      online-boutique/overrides/{service}-resources.yaml: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: {service}
+        spec:
+          template:
+            spec:
+              containers:
+                - name: server
+                  resources:
+                    requests:
+                      memory: {memory_mi}Mi
+                    limits:
+                      memory: {memory_mi}Mi
+    patches:
+      - overrides/{service}-resources.yaml
+expected_alerts:
+  - alertname: ContainerOOMKilled
+    service: "{service}"
+ground_truth:
+  - category: resource_limits_too_low
+    resource:
+      kind: Deployment
+      namespace: boutique
+      name: "{service}"
+acceptable_fixes: [patch_resources, open_pr]
+recovery_condition:
+  - 'kube_deployment_status_replicas_available{{namespace="boutique", deployment="{service}"}} == 1'
