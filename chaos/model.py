@@ -105,6 +105,8 @@ class Scenario(_Strict):
     parameters: dict[str, Parameter] = {}
     inject: list[Step] = Field(min_length=1)
     expected_alerts: list[ExpectedAlert]
+    # How long the runner waits for the expected alerts after injection.
+    alert_timeout_seconds: int = Field(default=480, ge=30, le=1800)
     ground_truth: list[GroundTruth] = Field(min_length=1)
     acceptable_fixes: list[ActionType] = Field(min_length=1)
     # PromQL expressions. Recovery holds when every one returns at least one

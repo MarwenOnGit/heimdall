@@ -15,6 +15,9 @@ if [ -n "$kinds" ]; then
   k delete "$kinds" --all -A --ignore-not-found --wait=false >/dev/null
 fi
 
+# Alert rules added by a scenario.
+k -n monitoring delete prometheusrule -l heimdall.io/scenario=true --ignore-not-found >/dev/null
+
 # Nodes paused by a node-failure scenario.
 for node in $(kind get nodes --name "$CLUSTER_NAME"); do
   if [ "$(docker inspect -f '{{.State.Paused}}' "$node")" = "true" ]; then

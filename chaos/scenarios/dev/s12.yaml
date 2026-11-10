@@ -1,0 +1,37 @@
+id: s12
+description: >-
+  Nothing is wrong. A badly written alert rule for {service} fires and resolves
+  every two minutes although the service is healthy.
+difficulty: hard
+parameters:
+  service:
+    choice: [paymentservice, shippingservice, emailservice, currencyservice]
+inject:
+  - type: manifest
+    content: |
+      apiVersion: monitoring.coreos.com/v1
+      kind: PrometheusRule
+      metadata:
+        name: s12-noisy-rule
+        namespace: monitoring
+        labels:
+          heimdall.io/scenario: "true"
+      spec:
+        groups:
+          - name: latency-budget
+            rules:
+              - alert: LatencyBudgetBurn
+                expr: |
+                  (heimdall:service_latency_ms:p95_rate5m{{namespace="boutique", service="{service}"}} > 0)
+                  and on () (time() % 120 < 50)
+                labels:
+                  heimdall: "true"
+                  severity: warning
+                annotations:
+                  summary: The latency budget of a service is burning.
+expected_alerts:
+  - alertname: LatencyBudgetBurn
+    service: "{service}"
+ground_truth:
+  - category: no_action_needed
+acceptable_fixes: [none, escalate]

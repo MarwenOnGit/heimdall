@@ -1,0 +1,36 @@
+id: s06
+description: A commit points the readiness probe of currencyservice at the wrong port.
+difficulty: medium
+inject:
+  - type: git_commit
+    message: "Align currencyservice probe ports"
+    files:
+      online-boutique/overrides/currencyservice-probe.yaml: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: currencyservice
+        spec:
+          template:
+            spec:
+              containers:
+                - name: server
+                  readinessProbe:
+                    grpc:
+                      port: 7001
+    patches:
+      - overrides/currencyservice-probe.yaml
+expected_alerts:
+  - alertname: PodNotReady
+    service: currencyservice
+ground_truth:
+  - category: bad_probe_config
+    resource:
+      kind: Deployment
+      namespace: boutique
+      name: currencyservice
+# Probes cannot be changed by the actor identity, so the fix goes through git.
+acceptable_fixes: [open_pr]
+recovery_condition:
+  - 'kube_deployment_status_replicas_updated{{namespace="boutique", deployment="currencyservice"}} == 1'
+  - 'kube_deployment_status_replicas_unavailable{{namespace="boutique", deployment="currencyservice"}} == 0'

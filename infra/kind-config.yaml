@@ -10,5 +10,17 @@ containerdConfigPatches:
       config_path = "/etc/containerd/certs.d"
 nodes:
   - role: control-plane
+  # Infrastructure node: monitoring, Gitea, Argo CD, Linkerd, Heimdall.
   - role: worker
+  # Workload node: only pods that tolerate the taint (Online Boutique) run
+  # here, so the node-failure scenario can stop it without taking the
+  # monitoring stack down with it.
   - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          taints:
+            - key: heimdall.io/workload
+              value: "true"
+              effect: NoSchedule

@@ -81,7 +81,7 @@ def wait_for_alerts(
     return fired, seen
 
 
-def run(scenario: Scenario, seed: int, alert_timeout: float, keep: bool) -> dict[str, Any]:
+def run(scenario: Scenario, seed: int, keep: bool) -> dict[str, Any]:
     params = sample(scenario.parameters, seed)
     rendered = scenario.render(params)
     result: dict[str, Any] = {
@@ -106,7 +106,7 @@ def run(scenario: Scenario, seed: int, alert_timeout: float, keep: bool) -> dict
         log("injected, waiting for alerts")
 
         expected = {(a.alertname, a.service) for a in rendered.expected_alerts}
-        fired, seen = wait_for_alerts(expected, alert_timeout)
+        fired, seen = wait_for_alerts(expected, rendered.alert_timeout_seconds)
         result["alerts_expected"] = sorted(f"{a}/{s}" for a, s in expected)
         result["alerts_fired_after_seconds"] = fired
         result["alerts_other"] = sorted(f"{a}/{s}" for a, s in seen - expected)
@@ -129,12 +129,11 @@ def main() -> int:
     parser.add_argument("scenario", help="scenario id, for example s05")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--set", dest="scenario_set", default="dev", choices=["dev", "holdout"])
-    parser.add_argument("--alert-timeout", type=float, default=480)
     parser.add_argument("--keep", action="store_true", help="leave the fault in place")
     args = parser.parse_args()
 
     scenario = find_scenario(args.scenario, args.scenario_set)
-    result = run(scenario, args.seed, args.alert_timeout, args.keep)
+    result = run(scenario, args.seed, args.keep)
 
     RESULTS.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")

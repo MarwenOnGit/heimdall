@@ -88,9 +88,20 @@ spec:
           annotations:
             summary: A container image cannot be pulled.
         - alert: PodPendingConfig
+          # A pod that cannot start: a container with a configuration error,
+          # or a pod stuck Pending (for example on a missing volume). Pods
+          # that are Pending because of an image pull have their own alert.
           expr: |
             max by (namespace, service) (
-              kube_pod_container_status_waiting_reason{namespace="boutique", reason=~"CreateContainerConfigError|ContainerCreating"}
+              (
+                kube_pod_container_status_waiting_reason{namespace="boutique", reason="CreateContainerConfigError"}
+                or on (namespace, pod)
+                (
+                  kube_pod_status_phase{namespace="boutique", phase="Pending"} == 1
+                  unless on (namespace, pod)
+                  kube_pod_container_status_waiting_reason{namespace="boutique", reason=~"ErrImagePull|ImagePullBackOff"} == 1
+                )
+              )
               * on (namespace, pod) group_left (service) heimdall:pod_service:info
             ) == 1
           for: 2m

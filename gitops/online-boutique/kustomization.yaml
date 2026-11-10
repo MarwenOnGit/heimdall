@@ -16,6 +16,21 @@ patches:
   - path: labels.yaml
   - path: redis-cart.yaml
   - path: checkoutservice.yaml
+  # Lets the workload run on the dedicated workload node.
+  - target:
+      kind: Deployment
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: all
+      spec:
+        template:
+          spec:
+            tolerations:
+              - key: heimdall.io/workload
+                operator: Exists
+                effect: NoSchedule
   # There is no load balancer in kind; the Service would stay Pending forever.
   - patch: |-
       apiVersion: v1

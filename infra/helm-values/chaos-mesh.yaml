@@ -5,6 +5,11 @@ controllerManager:
 chaosDaemon:
   runtime: containerd
   socketPath: /run/containerd/containerd.sock
+  # The daemon must also run on the tainted workload node.
+  tolerations:
+    - key: heimdall.io/workload
+      operator: Exists
+      effect: NoSchedule
 dashboard:
   create: false
 dnsServer:
