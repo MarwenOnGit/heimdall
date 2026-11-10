@@ -22,14 +22,20 @@ k() { kubectl --context "$KUBE_CONTEXT" "$@"; }
 h() { helm --kube-context "$KUBE_CONTEXT" "$@"; }
 
 # helm_install <release> <namespace> <chart> <repo-url> <version> [extra helm args]
-# Installs or upgrades a pinned chart straight from its repo URL, so nothing
-# depends on the user's local `helm repo` configuration.
+# Installs or upgrades a pinned chart. The chart archive is downloaded once
+# into .cache/charts/ and reused, so nothing depends on the user's `helm repo`
+# configuration and later runs need no network.
 helm_install() {
   local release="$1" ns="$2" chart="$3" repo="$4" version="$5"
+  local dir="$ROOT/.cache/charts" tgz
   shift 5
+  tgz="$dir/${chart}-${version}.tgz"
+  if [ ! -f "$tgz" ]; then
+    mkdir -p "$dir"
+    helm pull "$chart" --repo "$repo" --version "$version" -d "$dir" >/dev/null
+  fi
   log "helm: ${release} (${chart} ${version}) -> ${ns}"
-  h upgrade --install "$release" "$chart" --repo "$repo" --version "$version" \
-    --namespace "$ns" --wait --timeout 10m "$@" >/dev/null
+  h upgrade --install "$release" "$tgz" --namespace "$ns" --wait --timeout 10m "$@" >/dev/null
 }
 
 # ensure_secret <namespace> <name> <key> <value>: creates the Secret only if it

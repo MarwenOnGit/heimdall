@@ -42,6 +42,9 @@ if [ "$(docker inspect -f '{{json .NetworkSettings.Networks.kind}}' "$REGISTRY_N
   docker network connect kind "$REGISTRY_NAME"
 fi
 
+# Pull-through caches for every upstream registry.
+"$ROOT/infra/registry/caches.sh" up
+
 # Standard discovery ConfigMap for local registries (KEP-1755).
 k apply -f - <<EOF >/dev/null
 apiVersion: v1

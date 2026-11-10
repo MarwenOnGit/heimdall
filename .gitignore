@@ -1,5 +1,6 @@
 # local tools downloaded by infra/tools.sh
 .bin/
+.cache/
 
 # python
 .venv/
