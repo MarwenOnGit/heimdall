@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Creates the GitOps repo in Gitea, pushes gitops/ into it the first time, and
 # registers the webhook that tells Argo CD about pushes. Idempotent.
+#
+# With --reset it also returns the repo to the baseline: main is made equal to
+# the local gitops/ directory, open pull requests are closed and every other
+# branch is deleted.
 set -euo pipefail
 # shellcheck source=../lib.sh
 . "$(dirname "$0")/../lib.sh"
@@ -58,6 +62,28 @@ if [ "$(jq -r .empty "$work/resp")" = true ]; then
   git -C "$work/repo" -c user.name=bootstrap -c user.email=bootstrap@heimdall.local \
     commit -q -m "Initial GitOps content"
   git -C "$work/repo" push -q "http://${user}:${pass}@127.0.0.1:${port}/${ORG}/${REPO}.git" main
+fi
+
+if [ "${1:-}" = "--reset" ]; then
+  remote="http://${user}:${pass}@127.0.0.1:${port}/${ORG}/${REPO}.git"
+  git clone -q "$remote" "$work/reset"
+  find "$work/reset" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+  cp -r "$ROOT/gitops/." "$work/reset"
+  git -C "$work/reset" add -A
+  if ! git -C "$work/reset" diff --cached --quiet; then
+    log "gitea: restoring baseline content on main"
+    git -C "$work/reset" -c user.name=bootstrap -c user.email=bootstrap@heimdall.local \
+      commit -q -m "Reset to baseline"
+    git -C "$work/reset" push -q "$remote" main
+  fi
+  api GET "/repos/${ORG}/${REPO}/pulls?state=open" >/dev/null
+  for n in $(jq -r '.[].number' "$work/resp"); do
+    api PATCH "/repos/${ORG}/${REPO}/pulls/${n}" '{"state":"closed"}' >/dev/null
+  done
+  api GET "/repos/${ORG}/${REPO}/branches" >/dev/null
+  for b in $(jq -r '.[].name | select(. != "main")' "$work/resp"); do
+    api DELETE "/repos/${ORG}/${REPO}/branches/${b}" >/dev/null
+  done
 fi
 
 hook_url="http://argocd-server.argocd.svc/api/webhook"

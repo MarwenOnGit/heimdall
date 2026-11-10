@@ -1,0 +1,11 @@
+# kind nodes run containerd, not Docker. The dashboard and DNS chaos server
+# are not used.
+controllerManager:
+  replicaCount: 1
+chaosDaemon:
+  runtime: containerd
+  socketPath: /run/containerd/containerd.sock
+dashboard:
+  create: false
+dnsServer:
+  create: false

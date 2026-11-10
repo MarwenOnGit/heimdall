@@ -97,26 +97,21 @@ helm_install linkerd-control-plane linkerd linkerd-control-plane "$LINKERD_REPO"
   --set-file identity.issuer.tls.keyPEM="$certs/issuer.key"
 k apply -f "$ROOT/infra/linkerd/podmonitor.yaml" >/dev/null
 
+# --- chaos ----------------------------------------------------------------
+helm_install chaos-mesh chaos-mesh chaos-mesh "$CHAOS_MESH_REPO" "$CHAOS_MESH_VERSION" \
+  -f "$ROOT/infra/helm-values/chaos-mesh.yaml"
+
 # --- GitOps ---------------------------------------------------------------
 helm_install argocd argocd argo-cd "$ARGOCD_REPO" "$ARGOCD_VERSION" \
   -f "$ROOT/infra/helm-values/argocd.yaml"
 "$ROOT/infra/gitea/seed.sh"
 
 # --- workload -------------------------------------------------------------
-# Out-of-band dependency of checkoutservice; deliberately not in git.
-k -n boutique create configmap checkout-settings \
-  --from-literal=settings.yaml='currency_default: USD' \
-  --dry-run=client -o yaml | k apply -f - >/dev/null
+ensure_checkout_settings
 k apply -f "$ROOT/infra/argocd/appproject-boutique.yaml" \
   -f "$ROOT/infra/argocd/application-boutique.yaml" >/dev/null
 log "waiting for Online Boutique to become healthy"
-for _ in $(seq 1 120); do
-  status="$(k -n argocd get application boutique \
-    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null || true)"
-  [ "$status" = "Synced/Healthy" ] && break
-  sleep 5
-done
-[ "$status" = "Synced/Healthy" ] || die "boutique application is ${status:-unknown}, expected Synced/Healthy"
+wait_boutique_healthy 600 || die "Online Boutique did not become healthy"
 
 # --- alert rules ----------------------------------------------------------
 k apply -f "$ROOT/infra/alert-rules/" >/dev/null

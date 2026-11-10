@@ -38,3 +38,32 @@ ensure_secret() {
   k -n "$1" get secret "$2" >/dev/null 2>&1 ||
     k -n "$1" create secret generic "$2" --from-literal="$3=$4" >/dev/null
 }
+
+# The ConfigMap checkoutservice depends on. Deliberately not in git.
+ensure_checkout_settings() {
+  k -n boutique create configmap checkout-settings \
+    --from-literal=settings.yaml='currency_default: USD' \
+    --dry-run=client -o yaml | k apply -f - >/dev/null
+}
+
+# boutique_healthy: true when Argo CD reports Synced/Healthy and every
+# Deployment in `boutique` has exactly one ready, up-to-date replica and no
+# leftover pods from an older revision.
+boutique_healthy() {
+  [ "$(k -n argocd get application boutique \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null)" = "Synced/Healthy" ] || return 1
+  k -n boutique get deploy -o json | jq -e '
+    (.items | length) > 0 and all(.items[];
+      .spec.replicas == 1 and (.status.readyReplicas // 0) == 1 and
+      (.status.updatedReplicas // 0) == 1 and (.status.replicas // 0) == 1 and
+      .status.observedGeneration == .metadata.generation)' >/dev/null
+}
+
+# wait_boutique_healthy <timeout seconds>
+wait_boutique_healthy() {
+  local deadline=$(($(date +%s) + $1))
+  until boutique_healthy; do
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
+    sleep 3
+  done
+}

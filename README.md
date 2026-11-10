@@ -32,8 +32,11 @@ M1, verified on a running cluster:
   Heimdall identities: what RBAC rejects, what the admission policy rejects,
   and what is allowed.
 
-M1, still to do: `make reset`, Chaos Mesh, mirroring images into the local
-registry for offline use, and recording memory use per namespace.
+- `make reset` returns a damaged cluster to the baseline in seconds, including
+  the GitOps repo.
+
+M1, still to do: mirroring images into the local registry for offline use.
+Measured memory use and timings are in [docs/architecture.md](docs/architecture.md).
 
 ## Quickstart
 
@@ -45,6 +48,7 @@ Requirements: Linux, Docker, [kind](https://kind.sigs.k8s.io/), kubectl,
 make up                # create the cluster and install everything (about 25 min the first time)
 make test              # unit tests
 make test-integration  # RBAC and admission policy checks against the cluster
+make reset             # return the cluster to the baseline state
 make down              # delete the cluster
 ```
 

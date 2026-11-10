@@ -1,9 +1,10 @@
-.PHONY: help preflight tools up down test lint
+.PHONY: help preflight tools up down reset test lint
 
 help:
 	@echo "make preflight  check the machine"
 	@echo "make tools      download pinned CLI tools into .bin/"
 	@echo "make up         create the cluster and install everything (idempotent)"
+	@echo "make reset      return the running cluster to the baseline state"
 	@echo "make down       delete the cluster and the local registry"
 	@echo "make test       unit tests"
 	@echo "make test-integration  RBAC and admission checks against the cluster"
@@ -17,6 +18,9 @@ tools:
 
 up:
 	@infra/bootstrap.sh
+
+reset:
+	@infra/reset.sh
 
 down:
 	@infra/teardown.sh
