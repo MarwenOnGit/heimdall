@@ -1,0 +1,14 @@
+# kind cluster for Heimdall: 1 control plane + 2 workers.
+# The node image is passed on the command line from infra/versions.env.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  # Lets containerd resolve the local registry through /etc/containerd/certs.d,
+  # which bootstrap.sh fills in on every node.
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

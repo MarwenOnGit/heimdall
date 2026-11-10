@@ -1,0 +1,24 @@
+# local tools downloaded by infra/tools.sh
+.bin/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# runtime state
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.env
+*.key
+kubeconfig*
+bench/results/*.json
+
+# superseded spec, kept locally only
+heimdall_v1.md
