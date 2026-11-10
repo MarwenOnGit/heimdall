@@ -1,0 +1,20 @@
+# checkoutservice depends on a ConfigMap that is NOT in this repo. It is
+# created out-of-band by infra/bootstrap.sh, as a deliberate example of a
+# manual dependency that cannot be restored from git.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkoutservice
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          volumeMounts:
+            - name: checkout-settings
+              mountPath: /etc/checkout-settings
+              readOnly: true
+      volumes:
+        - name: checkout-settings
+          configMap:
+            name: checkout-settings

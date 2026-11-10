@@ -1,0 +1,32 @@
+# Identity used by the Executor. It can patch Deployments in `boutique` and
+# nothing else: no read, no create, no delete, nothing cluster-wide. What a
+# patch may contain is limited further by infra/admission/actor-policy.yaml.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: heimdall-actor
+  namespace: heimdall
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: heimdall-actor
+  namespace: boutique
+rules:
+  - apiGroups: [apps]
+    resources: [deployments, deployments/scale]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: heimdall-actor
+  namespace: boutique
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: heimdall-actor
+subjects:
+  - kind: ServiceAccount
+    name: heimdall-actor
+    namespace: heimdall

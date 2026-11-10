@@ -1,0 +1,7 @@
+# Marks Redis as stateful: Heimdall needs human approval to act on it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-cart
+  labels:
+    heimdall.io/stateful: "true"

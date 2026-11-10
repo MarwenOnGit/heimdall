@@ -7,6 +7,13 @@ kubeControllerManager: {enabled: false}
 kubeScheduler: {enabled: false}
 kubeProxy: {enabled: false}
 
+kube-state-metrics:
+  # Export the service label of pods and deployments, so alert rules can
+  # report per service instead of per pod.
+  metricLabelsAllowlist:
+    - pods=[app.kubernetes.io/name]
+    - deployments=[app.kubernetes.io/name]
+
 prometheus:
   prometheusSpec:
     retention: 2d

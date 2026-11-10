@@ -1,0 +1,163 @@
+# What the heimdall-actor identity may change, enforced by the API server.
+#
+# RBAC only says the actor may `patch` Deployments. A patch can change images,
+# commands and env, which is code execution in the namespace. These policies
+# reduce that to: restart, scale within bounds, adjust resources within
+# bounds, or switch to an image that was already deployed from git. They hold
+# even if the Heimdall process is fully compromised.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: heimdall-actor-deployments
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [UPDATE]
+        resources: [deployments]
+  matchConditions:
+    - name: is-heimdall-actor
+      expression: request.userInfo.username == "system:serviceaccount:heimdall:heimdall-actor"
+  variables:
+    - name: pod
+      expression: object.spec.template.spec
+    - name: oldPod
+      expression: oldObject.spec.template.spec
+    - name: annotations
+      expression: object.spec.template.metadata.?annotations.orValue({})
+    - name: oldAnnotations
+      expression: oldObject.spec.template.metadata.?annotations.orValue({})
+    - name: allowedImages
+      expression: params.data["images"].split("\n")
+  validations:
+    - message: Deployment labels and annotations may not change.
+      expression: >-
+        object.metadata.?labels == oldObject.metadata.?labels &&
+        object.metadata.?annotations == oldObject.metadata.?annotations
+    - message: Only replicas and the pod template may change in the Deployment spec.
+      expression: >-
+        object.spec.selector == oldObject.spec.selector &&
+        object.spec.?strategy == oldObject.spec.?strategy &&
+        object.spec.?paused == oldObject.spec.?paused &&
+        object.spec.?minReadySeconds == oldObject.spec.?minReadySeconds &&
+        object.spec.?revisionHistoryLimit == oldObject.spec.?revisionHistoryLimit &&
+        object.spec.?progressDeadlineSeconds == oldObject.spec.?progressDeadlineSeconds
+    - message: Replicas must stay between 1 and 5.
+      expression: >-
+        object.spec.replicas == oldObject.spec.replicas ||
+        (object.spec.replicas >= 1 && object.spec.replicas <= 5)
+    - message: Pod template labels may not change.
+      expression: object.spec.template.metadata.?labels == oldObject.spec.template.metadata.?labels
+    - message: The only pod template annotation that may change is kubectl.kubernetes.io/restartedAt.
+      expression: >-
+        variables.annotations.all(k, k == "kubectl.kubernetes.io/restartedAt" ||
+          (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.annotations[k])) &&
+        variables.oldAnnotations.all(k, k == "kubectl.kubernetes.io/restartedAt" || k in variables.annotations)
+    - message: >-
+        Pod-level settings (volumes, service account, security context, host
+        namespaces, scheduling, init and ephemeral containers) may not change.
+      expression: >-
+        variables.pod.?volumes == variables.oldPod.?volumes &&
+        variables.pod.?initContainers == variables.oldPod.?initContainers &&
+        variables.pod.?ephemeralContainers == variables.oldPod.?ephemeralContainers &&
+        variables.pod.?serviceAccountName == variables.oldPod.?serviceAccountName &&
+        variables.pod.?serviceAccount == variables.oldPod.?serviceAccount &&
+        variables.pod.?automountServiceAccountToken == variables.oldPod.?automountServiceAccountToken &&
+        variables.pod.?securityContext == variables.oldPod.?securityContext &&
+        variables.pod.?hostNetwork == variables.oldPod.?hostNetwork &&
+        variables.pod.?hostPID == variables.oldPod.?hostPID &&
+        variables.pod.?hostIPC == variables.oldPod.?hostIPC &&
+        variables.pod.?hostUsers == variables.oldPod.?hostUsers &&
+        variables.pod.?shareProcessNamespace == variables.oldPod.?shareProcessNamespace &&
+        variables.pod.?nodeName == variables.oldPod.?nodeName &&
+        variables.pod.?nodeSelector == variables.oldPod.?nodeSelector &&
+        variables.pod.?affinity == variables.oldPod.?affinity &&
+        variables.pod.?tolerations == variables.oldPod.?tolerations &&
+        variables.pod.?priorityClassName == variables.oldPod.?priorityClassName &&
+        variables.pod.?runtimeClassName == variables.oldPod.?runtimeClassName &&
+        variables.pod.?imagePullSecrets == variables.oldPod.?imagePullSecrets &&
+        variables.pod.?dnsPolicy == variables.oldPod.?dnsPolicy &&
+        variables.pod.?dnsConfig == variables.oldPod.?dnsConfig &&
+        variables.pod.?hostAliases == variables.oldPod.?hostAliases
+    - message: >-
+        Containers may not be added, removed or renamed, and only their image
+        and resources may change.
+      expression: >-
+        variables.pod.containers.size() == variables.oldPod.containers.size() &&
+        variables.pod.containers.all(c, variables.oldPod.containers.exists_one(o,
+          o.name == c.name &&
+          o.?command == c.?command &&
+          o.?args == c.?args &&
+          o.?workingDir == c.?workingDir &&
+          o.?env == c.?env &&
+          o.?envFrom == c.?envFrom &&
+          o.?volumeMounts == c.?volumeMounts &&
+          o.?volumeDevices == c.?volumeDevices &&
+          o.?securityContext == c.?securityContext &&
+          o.?ports == c.?ports &&
+          o.?livenessProbe == c.?livenessProbe &&
+          o.?readinessProbe == c.?readinessProbe &&
+          o.?startupProbe == c.?startupProbe &&
+          o.?lifecycle == c.?lifecycle &&
+          o.?imagePullPolicy == c.?imagePullPolicy &&
+          o.?stdin == c.?stdin &&
+          o.?tty == c.?tty))
+    - message: Every container image must be one that was already deployed from git.
+      expression: variables.pod.containers.all(c, c.image in variables.allowedImages)
+    - message: Every container must keep a memory limit of at most 1Gi and a CPU limit of at most 1.
+      expression: >-
+        variables.pod.containers.all(c,
+          has(c.resources) && has(c.resources.limits) &&
+          "memory" in c.resources.limits && "cpu" in c.resources.limits &&
+          quantity(c.resources.limits["memory"]).compareTo(quantity("1Gi")) <= 0 &&
+          quantity(c.resources.limits["cpu"]).compareTo(quantity("1")) <= 0)
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: heimdall-actor-deployments
+spec:
+  policyName: heimdall-actor-deployments
+  validationActions: [Deny]
+  paramRef:
+    name: heimdall-allowed-images
+    namespace: heimdall
+    parameterNotFoundAction: Deny
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: boutique
+---
+# The scale subresource is a different object type (autoscaling/v1 Scale), so
+# it needs its own policy.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: heimdall-actor-scale
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [UPDATE]
+        resources: [deployments/scale]
+  matchConditions:
+    - name: is-heimdall-actor
+      expression: request.userInfo.username == "system:serviceaccount:heimdall:heimdall-actor"
+  validations:
+    - message: Replicas must be between 1 and 5.
+      expression: object.spec.replicas >= 1 && object.spec.replicas <= 5
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: heimdall-actor-scale
+spec:
+  policyName: heimdall-actor-scale
+  validationActions: [Deny]

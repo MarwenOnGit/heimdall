@@ -70,9 +70,69 @@ fi
 helm_install kps monitoring kube-prometheus-stack "$PROM_STACK_REPO" "$PROM_STACK_VERSION" \
   -f "$ROOT/infra/helm-values/kube-prometheus-stack.yaml"
 
+# --- logs -----------------------------------------------------------------
+helm_install loki monitoring loki "$LOKI_REPO" "$LOKI_VERSION" \
+  -f "$ROOT/infra/helm-values/loki.yaml"
+helm_install alloy monitoring alloy "$ALLOY_REPO" "$ALLOY_VERSION" \
+  -f "$ROOT/infra/helm-values/alloy.yaml"
+
+# --- git server -----------------------------------------------------------
+if ! k -n gitea get secret gitea-admin >/dev/null 2>&1; then
+  k -n gitea create secret generic gitea-admin --from-literal=username=heimdall-admin \
+    --from-literal=password="$(openssl rand -hex 16)" >/dev/null
+fi
+helm_install gitea gitea gitea "$GITEA_REPO" "$GITEA_VERSION" \
+  -f "$ROOT/infra/helm-values/gitea.yaml"
+
+# --- service mesh (request metrics only) ----------------------------------
+certs="$(mktemp -d)"
+trap 'rm -rf "$certs"' EXIT
+"$ROOT/infra/linkerd/certs.sh" "$certs"
+helm_install linkerd-crds linkerd linkerd-crds "$LINKERD_REPO" "$LINKERD_VERSION" \
+  --set installGatewayAPI=true
+helm_install linkerd-control-plane linkerd linkerd-control-plane "$LINKERD_REPO" "$LINKERD_VERSION" \
+  -f "$ROOT/infra/helm-values/linkerd.yaml" \
+  --set-file identityTrustAnchorsPEM="$certs/ca.crt" \
+  --set-file identity.issuer.tls.crtPEM="$certs/issuer.crt" \
+  --set-file identity.issuer.tls.keyPEM="$certs/issuer.key"
+k apply -f "$ROOT/infra/linkerd/podmonitor.yaml" >/dev/null
+
+# --- GitOps ---------------------------------------------------------------
+helm_install argocd argocd argo-cd "$ARGOCD_REPO" "$ARGOCD_VERSION" \
+  -f "$ROOT/infra/helm-values/argocd.yaml"
+"$ROOT/infra/gitea/seed.sh"
+
+# --- workload -------------------------------------------------------------
+# Out-of-band dependency of checkoutservice; deliberately not in git.
+k -n boutique create configmap checkout-settings \
+  --from-literal=settings.yaml='currency_default: USD' \
+  --dry-run=client -o yaml | k apply -f - >/dev/null
+k apply -f "$ROOT/infra/argocd/appproject-boutique.yaml" \
+  -f "$ROOT/infra/argocd/application-boutique.yaml" >/dev/null
+log "waiting for Online Boutique to become healthy"
+for _ in $(seq 1 120); do
+  status="$(k -n argocd get application boutique \
+    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null || true)"
+  [ "$status" = "Synced/Healthy" ] && break
+  sleep 5
+done
+[ "$status" = "Synced/Healthy" ] || die "boutique application is ${status:-unknown}, expected Synced/Healthy"
+
+# --- alert rules ----------------------------------------------------------
+k apply -f "$ROOT/infra/alert-rules/" >/dev/null
+
+# --- identities and API-server limits -------------------------------------
+# The list of images the actor may switch a Deployment to: everything the
+# GitOps repo deploys. Heimdall has no permission to change this list.
+images="$(k kustomize "$ROOT/gitops/online-boutique" | sed -n 's/^ *image: *//p' | sort -u)"
+k -n heimdall create configmap heimdall-allowed-images --from-literal=images="$images" \
+  --dry-run=client -o yaml | k apply -f - >/dev/null
+k apply -f "$ROOT/infra/rbac/" -f "$ROOT/infra/admission/actor-policy.yaml" >/dev/null
+
 # --- temporary alert echo endpoint (replaced by Heimdall in M3) -----------
 k -n heimdall create configmap heimdall-echo --from-file="$ROOT/infra/echo/echo.py" \
   --dry-run=client -o yaml | k apply -f - >/dev/null
+# shellcheck disable=SC2016  # envsubst wants the literal variable name
 envsubst '${ECHO_IMAGE}' <"$ROOT/infra/echo/echo.yaml" | k apply -f - >/dev/null
 k -n heimdall rollout status deploy/heimdall --timeout=180s >/dev/null
 

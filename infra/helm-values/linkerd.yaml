@@ -1,0 +1,6 @@
+# Linkerd is used only for per-service request metrics. Certificates are
+# passed on the command line by bootstrap.sh.
+proxy:
+  resources:
+    cpu: {request: 10m}
+    memory: {request: 20Mi, limit: 128Mi}

@@ -1,0 +1,163 @@
+# Alerts that Heimdall acts on. Every alert carries heimdall="true" (the
+# Alertmanager route), severity, namespace and service.
+#
+# Annotations are static text on purpose: they are shown to the LLM, so they
+# must never template in values a workload controls (spec 6.5, test i08).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: heimdall-rules
+  namespace: monitoring
+spec:
+  groups:
+    - name: heimdall.recording
+      rules:
+        # Maps each boutique pod to its service (the app.kubernetes.io/name
+        # label), so pod-level metrics can be reported per service.
+        - record: heimdall:pod_service:info
+          expr: |
+            max by (namespace, pod, service) (
+              label_replace(
+                kube_pod_labels{namespace="boutique", label_app_kubernetes_io_name!=""},
+                "service", "$1", "label_app_kubernetes_io_name", "(.+)"
+              )
+            )
+        - record: heimdall:service_success_rate:ratio_rate2m
+          expr: |
+            sum by (namespace, service) (
+              rate(response_total{namespace="boutique", direction="inbound", classification="success"}[2m])
+            )
+            /
+            sum by (namespace, service) (
+              rate(response_total{namespace="boutique", direction="inbound"}[2m])
+            )
+        - record: heimdall:service_latency_ms:p95_rate5m
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, namespace, service) (
+                rate(response_latency_ms_bucket{namespace="boutique", direction="inbound"}[5m])
+              )
+            )
+
+    - name: heimdall.pods
+      rules:
+        - alert: PodCrashLooping
+          expr: |
+            max by (namespace, service) (
+              increase(kube_pod_container_status_restarts_total{namespace="boutique"}[5m])
+              * on (namespace, pod) group_left (service) heimdall:pod_service:info
+            ) > 3
+          for: 1m
+          labels: {heimdall: "true", severity: critical}
+          annotations:
+            summary: A container restarted more than 3 times in 5 minutes.
+        - alert: PodNotReady
+          expr: |
+            max by (namespace, service) (
+              kube_pod_status_ready{namespace="boutique", condition="false"}
+              * on (namespace, pod) group_left (service) heimdall:pod_service:info
+            ) == 1
+          for: 2m
+          labels: {heimdall: "true", severity: warning}
+          annotations:
+            summary: A pod has not been Ready for 2 minutes.
+        - alert: ContainerOOMKilled
+          # last_terminated_reason stays set until the pod is replaced, so it
+          # is combined with a recent restart to mean "was OOM-killed lately".
+          expr: |
+            max by (namespace, service) (
+              (
+                kube_pod_container_status_last_terminated_reason{namespace="boutique", reason="OOMKilled"} == 1
+                and on (namespace, pod, container)
+                increase(kube_pod_container_status_restarts_total{namespace="boutique"}[10m]) > 0
+              )
+              * on (namespace, pod) group_left (service) heimdall:pod_service:info
+            ) == 1
+          for: 0m
+          labels: {heimdall: "true", severity: critical}
+          annotations:
+            summary: A container was killed for exceeding its memory limit.
+        - alert: ImagePullFailing
+          expr: |
+            max by (namespace, service) (
+              kube_pod_container_status_waiting_reason{namespace="boutique", reason=~"ErrImagePull|ImagePullBackOff"}
+              * on (namespace, pod) group_left (service) heimdall:pod_service:info
+            ) == 1
+          for: 1m
+          labels: {heimdall: "true", severity: critical}
+          annotations:
+            summary: A container image cannot be pulled.
+        - alert: PodPendingConfig
+          expr: |
+            max by (namespace, service) (
+              kube_pod_container_status_waiting_reason{namespace="boutique", reason=~"CreateContainerConfigError|ContainerCreating"}
+              * on (namespace, pod) group_left (service) heimdall:pod_service:info
+            ) == 1
+          for: 2m
+          labels: {heimdall: "true", severity: critical}
+          annotations:
+            summary: A pod cannot start because of its configuration or volumes.
+        - alert: DeploymentReplicasMismatch
+          expr: |
+            label_replace(
+              kube_deployment_status_replicas_available{namespace="boutique"}
+              < kube_deployment_spec_replicas{namespace="boutique"},
+              "service", "$1", "deployment", "(.+)"
+            )
+          for: 3m
+          labels: {heimdall: "true", severity: warning}
+          annotations:
+            summary: A Deployment has fewer available replicas than desired.
+        - alert: CPUThrottlingHigh
+          expr: |
+            max by (namespace, service) (
+              (
+                sum by (namespace, pod) (rate(container_cpu_cfs_throttled_periods_total{namespace="boutique", container!=""}[5m]))
+                /
+                sum by (namespace, pod) (rate(container_cpu_cfs_periods_total{namespace="boutique", container!=""}[5m]))
+              )
+              * on (namespace, pod) group_left (service) heimdall:pod_service:info
+            ) > 0.5
+          for: 5m
+          labels: {heimdall: "true", severity: warning}
+          annotations:
+            summary: A pod is CPU-throttled in more than half of its scheduling periods.
+
+    - name: heimdall.requests
+      rules:
+        - alert: HighErrorRate
+          expr: heimdall:service_success_rate:ratio_rate2m < 0.95
+          for: 2m
+          labels: {heimdall: "true", severity: critical}
+          annotations:
+            summary: Fewer than 95% of requests to a service succeed.
+        - alert: HighLatencyP95
+          # One threshold for all services for now; per-service thresholds are
+          # set in M2 once baseline latencies are measured.
+          expr: heimdall:service_latency_ms:p95_rate5m > 1000
+          for: 3m
+          labels: {heimdall: "true", severity: warning}
+          annotations:
+            summary: The 95th percentile latency of a service is above its threshold.
+
+    - name: heimdall.infrastructure
+      rules:
+        - alert: PVCAlmostFull
+          expr: |
+            label_replace(
+              kubelet_volume_stats_used_bytes{namespace="boutique"}
+              / kubelet_volume_stats_capacity_bytes{namespace="boutique"} > 0.9,
+              "service", "$1", "persistentvolumeclaim", "(.+)"
+            )
+          for: 2m
+          labels: {heimdall: "true", severity: warning}
+          annotations:
+            summary: A persistent volume is more than 90% full.
+        - alert: NodeNotReady
+          # Nodes are not namespaced, so this alert has a node label instead
+          # of namespace and service.
+          expr: kube_node_status_condition{condition="Ready", status="true"} == 0
+          for: 1m
+          labels: {heimdall: "true", severity: critical}
+          annotations:
+            summary: A node is not Ready.

@@ -1,0 +1,20 @@
+# Argo CD may deploy only from the in-cluster GitOps repo, and only into the
+# `boutique` namespace. This holds even if Heimdall is compromised.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: boutique
+  namespace: argocd
+spec:
+  description: Online Boutique demo workload
+  sourceRepos:
+    - http://gitea-http.gitea.svc:3000/heimdall/gitops.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: boutique
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - {group: "", kind: Service}
+    - {group: "", kind: ServiceAccount}
+    - {group: "", kind: PersistentVolumeClaim}
+    - {group: apps, kind: Deployment}

@@ -1,0 +1,19 @@
+# Minimal Argo CD: no SSO, no notifications, no ApplicationSets.
+fullnameOverride: argocd
+dex: {enabled: false}
+notifications: {enabled: false}
+applicationSet: {replicas: 0}
+configs:
+  params:
+    # TLS is not needed inside the lab cluster, and the Gitea webhook posts
+    # over plain HTTP.
+    server.insecure: true
+controller:
+  resources:
+    requests: {cpu: 50m, memory: 200Mi}
+repoServer:
+  resources:
+    requests: {cpu: 20m, memory: 96Mi}
+server:
+  resources:
+    requests: {cpu: 20m, memory: 64Mi}
