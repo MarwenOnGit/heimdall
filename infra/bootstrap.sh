@@ -58,6 +58,9 @@ data:
     help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
 EOF
 
+# --- bad-release images used by the chaos scenarios ------------------------
+"$ROOT/fault-images/build.sh"
+
 # --- namespaces -----------------------------------------------------------
 k apply -f "$ROOT/infra/namespaces.yaml" >/dev/null
 
