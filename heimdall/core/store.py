@@ -76,6 +76,16 @@ CREATE TABLE IF NOT EXISTS postmortems (
     data_json    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS revision_availability (
+    namespace         TEXT NOT NULL,
+    deployment        TEXT NOT NULL,
+    revision          INTEGER NOT NULL,
+    first_seen_at     TEXT NOT NULL,
+    available_seconds REAL NOT NULL,
+    last_available_at TEXT,
+    PRIMARY KEY (namespace, deployment, revision)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

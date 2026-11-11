@@ -15,6 +15,7 @@ from heimdall.core.approvals import ApprovalStore
 from heimdall.core.audit import AuditLog
 from heimdall.core.incidents import IncidentManager
 from heimdall.core.models import Incident, ResourceRef
+from heimdall.core.revisions import RevisionTracker
 from heimdall.executor.executor import Executor
 from heimdall.executor.gitops import GitOps
 from heimdall.executor.verifier import Verifier
@@ -122,6 +123,7 @@ def build_pipeline(
     manager: IncidentManager,
     actions: ActionStore,
     approvals: ApprovalStore | None = None,
+    revisions: RevisionTracker | None = None,
 ) -> Pipeline | None:
     """The remediation pipeline for the configured mode, or None in observe mode."""
     if config.mode == "observe":
@@ -151,7 +153,7 @@ def build_pipeline(
     )
     return Pipeline(
         Planner(llm, audit),
-        InputBuilder(reader, actions, mode=config.mode, gitops=gitops),
+        InputBuilder(reader, actions, mode=config.mode, gitops=gitops, revisions=revisions),
         OpaHttpGate(httpx.Client(base_url=config.opa_url, timeout=5)),
         Executor(actor, reader, actions, audit, dry_run=not live, gitops=gitops),
         manager,

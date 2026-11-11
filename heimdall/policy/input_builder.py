@@ -13,6 +13,7 @@ from typing import Any
 
 from heimdall.core.actions import ActionStore
 from heimdall.core.models import ActionProposal, ActionType, Diagnosis, ResourceRef
+from heimdall.core.revisions import RevisionTracker
 from heimdall.executor.gitops import GitOps, GitOpsError
 from heimdall.tools.k8s import MESH_CONTAINERS
 from heimdall.tools.kube import KubeClient, KubeError
@@ -49,8 +50,10 @@ class InputBuilder:
         *,
         mode: str,
         gitops: GitOps | None = None,
+        revisions: RevisionTracker | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        self._revisions_tracker = revisions
         self._kube = kube
         self._actions = actions
         self._mode = mode
@@ -133,14 +136,18 @@ class InputBuilder:
         }
 
     def _revisions(self, target: ResourceRef, deployment: dict[str, Any]) -> list[dict[str, Any]]:
-        """How long each earlier revision served, estimated from ReplicaSets.
+        """How long each earlier revision was Available.
 
-        Kubernetes does not record how long a revision was Available. A
+        Measured by the revision tracker where it has data. A revision that
+        appeared while the tracker was watching and was never seen healthy
+        gets no credit at all.
+
+        Revisions older than anything the tracker has seen (deployed before
+        Heimdall was installed) are estimated from ReplicaSets instead: a
         superseded revision is credited with the time until the next one was
         created. That over-credits a revision that was broken while it was
-        current, so this is an approximation until Heimdall tracks
-        availability itself (spec 8.1, "revision tracker"). The current
-        revision is never offered as a rollback target.
+        current, which is why it is only the fallback. The current revision
+        is never offered as a rollback target.
         """
         uid = deployment["metadata"].get("uid")
         current = (
@@ -157,9 +164,21 @@ class InputBuilder:
                 owned.append((int(revision), rs["metadata"]["creationTimestamp"]))
         owned.sort()
 
+        measured: dict[int, float] = {}
+        if self._revisions_tracker is not None and target.namespace is not None:
+            measured = self._revisions_tracker.available_minutes(target.namespace, target.name)
+        first_measured = min(measured, default=None)
+
         history = []
         for index, (revision, created) in enumerate(owned):
-            if str(revision) == str(current) or index + 1 >= len(owned):
+            if str(revision) == str(current):
+                continue
+            if first_measured is not None and revision >= first_measured:
+                history.append(
+                    {"revision": revision, "available_minutes": measured.get(revision, 0)}
+                )
+                continue
+            if index + 1 >= len(owned):
                 continue
             superseded_at = datetime.fromisoformat(owned[index + 1][1].replace("Z", "+00:00"))
             history.append(

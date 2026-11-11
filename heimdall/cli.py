@@ -22,6 +22,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     heimdall = build(Config.from_env())
     if heimdall.worker is not None:
         heimdall.worker.start()
+    if heimdall.revisions is not None:
+        heimdall.revisions.start()
     uvicorn.run(heimdall.api, host=args.host, port=args.port, log_level="info")
     return 0
 

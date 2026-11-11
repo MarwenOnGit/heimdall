@@ -11,6 +11,7 @@ from heimdall.agent.setup import (
     build_investigator,
     build_llm,
     build_pipeline,
+    read_only_kube,
 )
 from heimdall.agent.worker import Worker
 from heimdall.api import create_app
@@ -21,6 +22,7 @@ from heimdall.core.approvals import Approval
 from heimdall.core.audit import AuditLog
 from heimdall.core.confirm import PrometheusConfirmer
 from heimdall.core.incidents import IncidentManager
+from heimdall.core.revisions import RevisionTracker, RevisionWatcher
 from heimdall.core.store import connect
 from heimdall.report.store import PostmortemStore, PostmortemWriter
 from heimdall.tools.dependencies import DependencyGraph
@@ -38,6 +40,7 @@ class Heimdall:
     gitea_anchors: anchoring.GiteaAnchorPublisher | None
     api: FastAPI
     worker: Worker | None = None
+    revisions: RevisionWatcher | None = None
 
 
 def gitea_anchor_publisher(config: Config) -> anchoring.GiteaAnchorPublisher | None:
@@ -81,11 +84,14 @@ def build(config: Config) -> Heimdall:
     approvals = build_approvals(config, conn)
     worker = None
     pipeline = None
+    revisions = None
     llm = build_llm(config)
     if llm is not None:
         investigator = build_investigator(config, audit, llm, postmortems)
         actions = ActionStore(conn)
-        pipeline = build_pipeline(config, audit, llm, incidents, actions, approvals)
+        tracker = RevisionTracker(read_only_kube(config), conn, config.namespaces)
+        revisions = RevisionWatcher(tracker)
+        pipeline = build_pipeline(config, audit, llm, incidents, actions, approvals, tracker)
         worker = Worker(
             incidents,
             investigator,
@@ -106,4 +112,4 @@ def build(config: Config) -> Heimdall:
         approvals=approvals if pipeline is not None else None,
         on_decision=on_decision,
     )
-    return Heimdall(config, conn, audit, incidents, anchorer, gitea_anchors, api, worker)
+    return Heimdall(config, conn, audit, incidents, anchorer, gitea_anchors, api, worker, revisions)
