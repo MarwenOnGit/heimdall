@@ -39,7 +39,7 @@ choices that differ from it are recorded in [docs/decisions.md](docs/decisions.m
 | M2 Chaos suite | 15 of 16 scenarios written; see the table below for which are verified |
 | M3 Ingest, incidents, audit | done, running in the cluster |
 | M4 Investigator | works end to end with a local model; accuracy not yet tuned or measured at scale |
-| M5 Policy gate | OPA policy and its tests written; not yet connected to a planner |
+| M5 Policy gate | OPA policy, fail-closed gate and their tests written; not yet connected to a planner |
 | M6 – M11 | not started |
 
 ### What works today
@@ -88,12 +88,37 @@ alerts must fire, the true root cause and the acceptable fixes. Parameters
 injects, waits for the alerts, optionally waits for Heimdall and grades its
 diagnosis without any model involved, then resets.
 
-SCENARIO_TABLE
+| ID | Fault | Expected alert | Verified |
+|---|---|---|---|
+| s01 | Commit points cartservice at a Redis address that does not exist | `HighErrorRate` frontend | alert seen firing; not re-run since the expectation was corrected |
+| s02 | ConfigMap that checkoutservice mounts is deleted | `PodPendingConfig` checkoutservice | yes, 147 s |
+| s03 | Commit lowers a memory limit below what the service needs | `ContainerOOMKilled` | yes, 30 s |
+| s04 | Commit releases a frontend build that fails 20 to 40% of requests | `HighErrorRate` frontend | yes, 182 s |
+| s05 | Commit sets an image tag that does not exist | `ImagePullFailing` | yes, 91 s (two runs) |
+| s06 | Commit points a readiness probe at the wrong port | `PodNotReady` currencyservice | yes, 147 s |
+| s07 | Redis scaled to zero | `HighErrorRate` frontend | alert seen firing; not re-run since the expectation was corrected |
+| s08 | CPU stress inside adservice | `CPUThrottlingHigh` adservice | yes, 384 s |
+| s09 | Network delay between frontend and productcatalogservice | `HighLatencyP95` frontend | yes, 228 s |
+| s10 | Redis data volume fills up | `VolumeAlmostFull` redis-cart | not run yet |
+| s11 | Two faults at once: low memory limit and bad image tag | both of the above | image half fired (86 s); memory half fixed, not re-run |
+| s12 | Nothing wrong; a badly written rule flaps | `LatencyBudgetBurn` | rule fixed after a syntax error, not re-run |
+| s13 | A worker node stops responding | `NodeNotReady` | not run yet |
+| s14 | Harmless commit two minutes before Redis is scaled to zero | `HighErrorRate` frontend | not run yet |
+| s16 | Redis is slow, not down | `HighLatencyP95` cartservice | not run yet |
+
+"Verified" means one run in which the expected alert fired and the cluster
+returned to baseline afterwards; the time is from injection to the alert. The
+spec asks for ten clean runs per scenario, which has not been done.
+
+One scenario has been run with Heimdall investigating: s05, where it named
+the right cause (`bad_image_reference` on the right Deployment) in 96 seconds
+with 7 tool calls. That is one run, not an accuracy figure.
 
 ### Known gaps
 
 - The diagnosis accuracy target for M4 (8 of 10 on four scenarios) has not
-  been measured yet; the numbers above are single runs.
+  been measured. Running every scenario with a local model on the GPU is
+  heavy for a laptop; it needs to be done in small batches.
 - s15 (a forced bad fix that must be rolled back) needs the executor from M6.
 - The hold-out scenarios are deliberately not written by the author
   ([why](docs/decisions.md)).
