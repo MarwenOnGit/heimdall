@@ -89,7 +89,10 @@ def build(config: Config) -> Heimdall:
     if llm is not None:
         investigator = build_investigator(config, audit, llm, postmortems)
         actions = ActionStore(conn)
-        tracker = RevisionTracker(read_only_kube(config), conn, config.namespaces)
+        # Its own connection: the tracker writes from a background thread.
+        tracker = RevisionTracker(
+            read_only_kube(config), connect(config.db_path), config.namespaces
+        )
         revisions = RevisionWatcher(tracker)
         pipeline = build_pipeline(config, audit, llm, incidents, actions, approvals, tracker)
         worker = Worker(
