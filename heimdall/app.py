@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import httpx
 from fastapi import FastAPI
 
+from heimdall.agent.setup import build_investigator, build_llm
+from heimdall.agent.worker import Worker
 from heimdall.api import create_app
 from heimdall.config import Config
 from heimdall.core import anchor as anchoring
@@ -27,6 +29,7 @@ class Heimdall:
     anchorer: anchoring.Anchorer | None
     gitea_anchors: anchoring.GiteaAnchorPublisher | None
     api: FastAPI
+    worker: Worker | None = None
 
 
 def gitea_anchor_publisher(config: Config) -> anchoring.GiteaAnchorPublisher | None:
@@ -64,4 +67,10 @@ def build(config: Config) -> Heimdall:
     api = create_app(alert_token=config.alert_token, manager=incidents, confirmer=confirmer)
     # Pick up anything a previous run left unfinished.
     incidents.reconcile()
-    return Heimdall(config, conn, audit, incidents, anchorer, gitea_anchors, api)
+
+    worker = None
+    llm = build_llm(config)
+    if llm is not None:
+        investigator = build_investigator(config, audit, llm)
+        worker = Worker(incidents, investigator, conn, settle_seconds=config.settle_seconds)
+    return Heimdall(config, conn, audit, incidents, anchorer, gitea_anchors, api, worker)

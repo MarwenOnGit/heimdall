@@ -18,6 +18,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     from heimdall.app import build
 
     heimdall = build(Config.from_env())
+    if heimdall.worker is not None:
+        heimdall.worker.start()
     uvicorn.run(heimdall.api, host=args.host, port=args.port, log_level="info")
     return 0
 
@@ -93,6 +95,34 @@ def cmd_incident_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_incident_investigate(args: argparse.Namespace) -> int:
+    """Investigate one incident now, in the foreground, and print the result."""
+    from heimdall.agent.setup import build_investigator, build_llm
+    from heimdall.agent.worker import investigate_incident
+
+    config = Config.from_env()
+    conn = connect(args.db or config.db_path)
+    log = AuditLog(conn)
+    manager = IncidentManager(conn, log, DependencyGraph.load(config.dependencies_path))
+    llm = build_llm(config)
+    if llm is None:
+        print("no LLM configured (HEIMDALL_LLM_PROVIDER)")
+        return 2
+    try:
+        incident = manager.get(args.id)
+    except KeyError:
+        print(f"no incident {args.id}")
+        return 1
+    run = investigate_incident(incident, manager, build_investigator(config, log, llm), conn)
+    print(run.diagnosis.model_dump_json(indent=2))
+    print(
+        f"\n{run.stopped_because}: {run.tool_calls} tool calls, {run.llm_calls} LLM calls, "
+        f"{run.prompt_tokens + run.completion_tokens} tokens, {run.seconds}s, "
+        f"{run.rejections} rejected drafts"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="heimdall")
     commands = parser.add_subparsers(required=True)
@@ -118,6 +148,11 @@ def main(argv: list[str] | None = None) -> int:
     show.add_argument("id")
     show.add_argument("--db", type=Path)
     show.set_defaults(func=cmd_incident_show)
+
+    investigate = incident.add_parser("investigate")
+    investigate.add_argument("id")
+    investigate.add_argument("--db", type=Path)
+    investigate.set_defaults(func=cmd_incident_investigate)
 
     args = parser.parse_args(argv)
     result: int = args.func(args)
