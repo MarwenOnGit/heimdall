@@ -1,5 +1,5 @@
-# Heimdall itself. ${HEIMDALL_IMAGE} and ${HEIMDALL_LLM_PROVIDER} are filled in
-# by infra/bootstrap.sh.
+# Heimdall itself. ${HEIMDALL_IMAGE}, ${HEIMDALL_LLM_PROVIDER}, ${OPA_IMAGE} and
+# ${HEIMDALL_POLICY_HASH} are filled in by infra/bootstrap.sh.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -26,9 +26,12 @@ spec:
   template:
     metadata:
       labels: {app.kubernetes.io/name: heimdall}
+      annotations:
+        # Restarts the pod when the policy changes.
+        heimdall.io/policy-hash: "${HEIMDALL_POLICY_HASH}"
     spec:
-      # The pod runs as the read-only identity, which is all the investigator
-      # needs. The actor identity is added separately with the executor.
+      # The pod runs as the read-only identity. The actor identity's token is
+      # mounted separately and used only by the executor.
       serviceAccountName: heimdall-readonly
       securityContext:
         runAsNonRoot: true
@@ -58,6 +61,11 @@ spec:
             - {name: HEIMDALL_OLLAMA_URL, value: "http://ollama.heimdall.svc:11434"}
             # A local model is slow; give it more time than an API model needs.
             - {name: HEIMDALL_MAX_INVESTIGATION_SECONDS, value: "600"}
+            # dry_run: plan, check policy, and send allowed actions to the API
+            # server as dry runs. Nothing in the cluster is changed.
+            - {name: HEIMDALL_MODE, value: dry_run}
+            - {name: HEIMDALL_ACTOR_TOKEN_FILE, value: /var/run/heimdall/actor/token}
+            - {name: HEIMDALL_OPA_URL, value: "http://127.0.0.1:8181"}
           readinessProbe:
             httpGet: {path: /healthz, port: http}
           livenessProbe:
@@ -73,8 +81,34 @@ spec:
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: audit-key, mountPath: /keys, readOnly: true}
+            - {name: actor-token, mountPath: /var/run/heimdall/actor, readOnly: true}
             - {name: tmp, mountPath: /tmp}
+        # The policy engine. It listens on localhost only, so nothing outside
+        # the pod can query or reconfigure it.
+        - name: opa
+          image: ${OPA_IMAGE}
+          args:
+            - run
+            - --server
+            - --addr=127.0.0.1:8181
+            - --disable-telemetry
+            - /policies
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: policy, mountPath: /policies, readOnly: true}
       volumes:
+        - name: policy
+          configMap: {name: heimdall-policy}
+        - name: actor-token
+          secret:
+            secretName: heimdall-actor-token
+            items: [{key: token, path: token}]
         - name: data
           persistentVolumeClaim: {claimName: heimdall-data}
         - name: audit-key

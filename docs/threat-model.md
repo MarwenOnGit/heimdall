@@ -1,8 +1,10 @@
 # Threat model
 
 Status: a working draft that covers what is built so far (ingest, incidents,
-audit log, investigator, policy, admission). The planner, executor and
-approval flow are not built yet; their rows are marked *planned*. The
+audit log, investigator, planner, policy gate, dry-run executor, admission).
+Approvals, pull requests, verification and live execution are not built yet;
+their rows are marked *planned*. The planner, gate and executor are
+unit-tested but have not run on the cluster. The
 injection test suite (i01 to i10 in the spec) is not written yet, so the
 "tested by" column lists only tests that exist.
 
@@ -38,8 +40,9 @@ enforced outside the Heimdall process, by the Kubernetes API server.
 | Model can only read, through fixed tools | Heimdall | no | built |
 | Queries confined to one namespace (parsed PromQL and LogQL) | Heimdall | no | built |
 | Evidence must quote real tool output | Heimdall | no | built |
-| Actions only from a fixed catalog | Heimdall | no | planned |
-| Policy gate (OPA) | Heimdall and OPA | no | policy built, not wired in |
+| Actions only from a fixed catalog, per kind of cause, on diagnosed resources only | Heimdall | no | built |
+| Policy gate (OPA), input built from cluster state | Heimdall and OPA | no | built |
+| Kill switch, checked before every action | Heimdall | no | built |
 | RBAC: read-only identity cannot write or read Secrets; actor can only patch Deployments in one namespace | API server | **yes** | built |
 | Admission policy: what an actor patch may contain | API server | **yes** | built |
 | Argo CD project: one source repo, one destination namespace | Argo CD | **yes** | built |
@@ -81,13 +84,15 @@ lowercase hex, or split across lines can get through. Redaction reduces
 exposure; it is the RBAC rule on Secrets and the masking of env values that
 keep the important ones out in the first place.
 
-### Policy gate and executor (planned)
+### Planner, policy gate and executor
 
 | Threat | Mitigation | Tested by |
 |---|---|---|
-| Model proposes a harmful action | Catalog only; policy checks blast radius, bounds, rate and confidence on structured fields built from cluster state, not model text | `actions_test.rego` (33 cases), property test over random proposals |
+| Model proposes a harmful action | Catalog only; the planner drops anything not allowed for the diagnosed cause or aimed at another resource; policy checks blast radius, bounds, rate and confidence on fields built from cluster state, not model text | `test_planner.py`, `actions_test.rego` (33 cases), property test over random proposals, `test_pipeline.py` |
 | Policy engine unreachable or erroring | The gate fails closed: any error is a deny | `test_policy_gate.py` |
-| Change between policy check and execution | Writes carry a `resourceVersion` precondition | planned |
+| Change between policy check and execution | Writes carry the `resourceVersion` the policy saw; the API server refuses if it moved | `test_change_since_the_policy_check_is_a_conflict` |
+| An action applied twice after a restart | Idempotency key per incident and action | `test_the_same_action_is_never_applied_twice` |
+| Runaway agent | Kill switch read before every action; at most three writes per incident; no repeat within ten minutes | `test_frozen_heimdall_touches_nothing`, `test_fourth_write_in_an_incident_is_denied` |
 | Approval reused for a different action | Approval tokens bound to the hash of the exact action | planned |
 | Heimdall bypasses its own policy (bug or hijack) | The admission policy rejects the request at the API server | `make test-integration` (38 cases) |
 

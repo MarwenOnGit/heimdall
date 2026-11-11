@@ -139,11 +139,17 @@ if ! k -n heimdall get secret heimdall-audit-key >/dev/null 2>&1; then
   rm -f "$keyfile"
 fi
 "$ROOT/infra/gitea/bot.sh"
+# The action policy, served by the OPA sidecar. Tests are not shipped.
+policy="$ROOT/heimdall/policy/policies/actions.rego"
+k -n heimdall create configmap heimdall-policy --from-file="$policy" \
+  --dry-run=client -o yaml | k apply -f - >/dev/null
+HEIMDALL_POLICY_HASH="$(sha256sum "$policy" | cut -c1-16)"
 HEIMDALL_IMAGE="$("$ROOT/deploy/build.sh")"
 HEIMDALL_LLM_PROVIDER="$("$ROOT/infra/ollama-bridge.sh")"
-export HEIMDALL_IMAGE HEIMDALL_LLM_PROVIDER
+export HEIMDALL_IMAGE HEIMDALL_LLM_PROVIDER HEIMDALL_POLICY_HASH OPA_IMAGE
 # shellcheck disable=SC2016  # envsubst wants the literal variable names
-envsubst '${HEIMDALL_IMAGE} ${HEIMDALL_LLM_PROVIDER}' <"$ROOT/deploy/heimdall.yaml" |
+envsubst '${HEIMDALL_IMAGE} ${HEIMDALL_LLM_PROVIDER} ${HEIMDALL_POLICY_HASH} ${OPA_IMAGE}' \
+  <"$ROOT/deploy/heimdall.yaml" |
   k apply -f - >/dev/null
 k -n heimdall rollout status deploy/heimdall --timeout=180s >/dev/null
 
