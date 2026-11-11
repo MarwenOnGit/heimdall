@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS incidents (
     state        TEXT NOT NULL,
     namespace    TEXT,
     services_json TEXT NOT NULL,
+    flapping     INTEGER NOT NULL DEFAULT 0,
+    last_alert_at TEXT NOT NULL,
     opened_at    TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );

@@ -1,8 +1,10 @@
 """Data models shared across Heimdall and the chaos suite."""
 
+from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RootCauseCategory(StrEnum):
@@ -39,3 +41,67 @@ class ResourceRef(BaseModel):
     kind: str
     name: str
     namespace: str | None = None
+
+
+class Alert(BaseModel):
+    """One alert as delivered by the Alertmanager webhook."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    status: Literal["firing", "resolved"]
+    labels: dict[str, str]
+    annotations: dict[str, str] = {}
+    starts_at: datetime = Field(alias="startsAt")
+    ends_at: datetime | None = Field(default=None, alias="endsAt")
+    fingerprint: str
+
+    @property
+    def alertname(self) -> str:
+        return self.labels.get("alertname", "")
+
+    @property
+    def namespace(self) -> str | None:
+        return self.labels.get("namespace")
+
+    @property
+    def service(self) -> str | None:
+        return self.labels.get("service")
+
+
+class AlertmanagerWebhook(BaseModel):
+    """The Alertmanager webhook payload (version 4)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    version: str
+    status: str
+    receiver: str
+    alerts: list[Alert]
+
+
+class IncidentState(StrEnum):
+    OPEN = "open"
+    INVESTIGATING = "investigating"
+    DIAGNOSED = "diagnosed"
+    PLANNING = "planning"
+    AWAITING_APPROVAL = "awaiting_approval"
+    EXECUTING = "executing"
+    VERIFYING = "verifying"
+    MITIGATED = "mitigated"
+    RESOLVED = "resolved"
+    ESCALATED = "escalated"
+    ROLLED_BACK = "rolled_back"
+    FAILED = "failed"
+
+
+TERMINAL_STATES = frozenset({IncidentState.RESOLVED, IncidentState.ESCALATED, IncidentState.FAILED})
+
+
+class Incident(BaseModel):
+    id: str
+    state: IncidentState
+    namespace: str | None
+    services: list[str]
+    flapping: bool = False
+    opened_at: datetime
+    updated_at: datetime
