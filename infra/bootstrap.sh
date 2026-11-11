@@ -138,6 +138,8 @@ if ! k -n heimdall get secret heimdall-audit-key >/dev/null 2>&1; then
   k -n heimdall create secret generic heimdall-audit-key --from-file=audit.key="$keyfile" >/dev/null
   rm -f "$keyfile"
 fi
+# Key that signs human approval tokens. Generated once.
+ensure_secret heimdall heimdall-approval-secret secret "$(openssl rand -hex 32)"
 "$ROOT/infra/gitea/bot.sh"
 # The action policy, served by the OPA sidecar. Tests are not shipped.
 policy="$ROOT/heimdall/policy/policies/actions.rego"
