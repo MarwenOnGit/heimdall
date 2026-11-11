@@ -153,17 +153,16 @@ spec:
 
     - name: heimdall.infrastructure
       rules:
-        - alert: PVCAlmostFull
+        - alert: VolumeAlmostFull
           expr: |
-            label_replace(
-              kubelet_volume_stats_used_bytes{namespace="boutique"}
-              / kubelet_volume_stats_capacity_bytes{namespace="boutique"} > 0.9,
-              "service", "$1", "persistentvolumeclaim", "(.+)"
-            )
+            max by (namespace, service) (
+              1 - node_filesystem_avail_bytes{namespace="boutique", mountpoint="/data"}
+                / node_filesystem_size_bytes{namespace="boutique", mountpoint="/data"}
+            ) > 0.9
           for: 2m
           labels: {heimdall: "true", severity: warning}
           annotations:
-            summary: A persistent volume is more than 90% full.
+            summary: A data volume is more than 90% full.
         - alert: NodeNotReady
           # Nodes are not namespaced, so this alert has a node label instead
           # of namespace and service.
