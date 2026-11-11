@@ -31,6 +31,11 @@ class Config:
     settle_seconds: float
     max_tool_calls: int
     max_investigation_seconds: float
+    # observe: diagnose only. dry_run: also plan, check policy, and send each
+    # allowed action to the API server as a dry run. Live mode does not exist yet.
+    mode: str
+    actor_token_file: Path | None
+    opa_url: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -76,4 +81,7 @@ class Config:
             max_investigation_seconds=float(
                 os.environ.get("HEIMDALL_MAX_INVESTIGATION_SECONDS", "240")
             ),
+            mode=os.environ.get("HEIMDALL_MODE", "observe"),
+            actor_token_file=path("HEIMDALL_ACTOR_TOKEN_FILE"),
+            opa_url=os.environ.get("HEIMDALL_OPA_URL", "http://127.0.0.1:8181"),
         )

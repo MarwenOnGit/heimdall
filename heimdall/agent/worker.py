@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from heimdall.agent.investigator import Investigation, Investigator
+from heimdall.agent.pipeline import Pipeline
 from heimdall.core.incidents import IncidentManager
 from heimdall.core.models import Incident, IncidentState, RootCauseCategory
 
@@ -41,8 +42,10 @@ def investigate_incident(
     manager: IncidentManager,
     investigator: Investigator,
     conn: sqlite3.Connection,
+    pipeline: Pipeline | None = None,
 ) -> Investigation:
-    """Run one investigation and move the incident to its next state."""
+    """Run one investigation and move the incident to its next state. With a
+    pipeline, a diagnosed incident goes on to planning, policy and dry run."""
     manager.transition(incident.id, IncidentState.INVESTIGATING, reason="investigation started")
     run = investigator.investigate(incident, incident_alerts(conn, incident.id))
     categories = {cause.category for cause in run.diagnosis.root_causes}
@@ -52,6 +55,8 @@ def investigate_incident(
         )
     else:
         manager.transition(incident.id, IncidentState.DIAGNOSED, reason="diagnosis validated")
+        if pipeline is not None:
+            pipeline.remediate(run.diagnosis)
     return run
 
 
@@ -70,10 +75,12 @@ class Worker:
         *,
         settle_seconds: float = 45,
         poll_seconds: float = 5,
+        pipeline: Pipeline | None = None,
     ) -> None:
         self._manager = manager
         self._investigator = investigator
         self._conn = conn
+        self._pipeline = pipeline
         self._settle = timedelta(seconds=settle_seconds)
         self._poll = poll_seconds
         self._stop = threading.Event()
@@ -92,7 +99,11 @@ class Worker:
             if incident.state is IncidentState.OPEN and now - incident.opened_at >= self._settle:
                 # Re-read: more alerts may have joined while it settled.
                 return investigate_incident(
-                    self._manager.get(incident.id), self._manager, self._investigator, self._conn
+                    self._manager.get(incident.id),
+                    self._manager,
+                    self._investigator,
+                    self._conn,
+                    self._pipeline,
                 )
         return None
 

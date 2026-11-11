@@ -99,3 +99,32 @@ def test_incident_alerts_are_deduplicated_with_latest_status(tmp_path: Path) -> 
 
     assert (alert["alertname"], alert["service"], alert["status"]) == (
         "HighErrorRate", "frontend", "resolved")  # fmt: skip
+
+
+def test_diagnosed_incident_is_handed_to_the_pipeline(tmp_path: Path) -> None:
+    opened = datetime.now(UTC) - timedelta(minutes=2)
+    manager, worker, _, incident = setup(tmp_path, diagnosis("bad_release"), opened)
+    seen = []
+
+    class RecordingPipeline:
+        def remediate(self, diagnosis):
+            seen.append(diagnosis.incident_id)
+
+    worker._pipeline = RecordingPipeline()  # noqa: SLF001
+
+    worker.run_once()
+
+    assert seen == [incident.id]
+
+
+def test_unknown_diagnosis_never_reaches_the_pipeline(tmp_path: Path) -> None:
+    opened = datetime.now(UTC) - timedelta(minutes=2)
+    _, worker, _, _ = setup(tmp_path, diagnosis("unknown"), opened)
+
+    class Forbidden:
+        def remediate(self, diagnosis):
+            raise AssertionError("an unknown cause must not be planned for")
+
+    worker._pipeline = Forbidden()  # noqa: SLF001
+
+    worker.run_once()

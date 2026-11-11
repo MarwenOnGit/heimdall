@@ -30,3 +30,15 @@ subjects:
   - kind: ServiceAccount
     name: heimdall-actor
     namespace: heimdall
+---
+# A token for the actor identity, as a Secret. The Heimdall pod runs as the
+# read-only identity and mounts this token separately, so the two identities
+# stay distinct inside one pod.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: heimdall-actor-token
+  namespace: heimdall
+  annotations:
+    kubernetes.io/service-account.name: heimdall-actor
+type: kubernetes.io/service-account-token

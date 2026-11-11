@@ -39,7 +39,7 @@ choices that differ from it are recorded in [docs/decisions.md](docs/decisions.m
 | M2 Chaos suite | 15 of 16 scenarios written; see the table below for which are verified |
 | M3 Ingest, incidents, audit | done, running in the cluster |
 | M4 Investigator | works end to end with a local model; accuracy not yet tuned or measured at scale |
-| M5 Planner and policy gate | planner, OPA policy and fail-closed gate written and unit-tested; not yet connected to each other or to the cluster |
+| M5 Planner, policy gate, dry run | built and unit-tested end to end against the real policy engine and a fake Kubernetes API; **not yet run on the cluster** |
 | M6 – M11 | not started |
 
 ### What works today
@@ -82,13 +82,27 @@ it, the incident is escalated as unknown.
 The model runs locally through Ollama (`qwen3:8b` on a laptop GPU), with no
 cloud dependency. An API provider is not implemented yet.
 
-**Planner and policy (not wired in yet).** The planner lets the model choose
-actions, but only action types that can fix the diagnosed kind of cause, only
-on a resource named in the diagnosis, and only above the confidence
-threshold; anything else is dropped and the incident is escalated. The OPA
-policy then decides allow, needs approval or deny (33 rule tests, plus a
-property test that throws random proposals at the real engine and checks that
-nothing unsafe is let through). The gate denies when OPA cannot be reached.
+**Planning, policy and dry run.** After a diagnosis, the planner lets the
+model choose actions, but only action types that can fix the diagnosed kind
+of cause, only on a resource named in the diagnosis, and only above the
+confidence threshold; anything else is dropped and the incident is escalated.
+
+For each proposal Heimdall builds the policy input itself, from the live
+cluster and its own action record, never from model text. The OPA policy then
+decides allow, needs approval or deny (33 rule tests, plus a property test
+that throws random proposals at the real engine and checks that nothing
+unsafe is let through). The gate denies when OPA cannot be reached.
+
+An allowed action goes to the API server as a dry run, with the actor
+identity and a precondition on the object's version, so the server runs the
+whole request, admission policy included, and stores nothing. A change
+between the policy check and the write is refused by the server. The same
+action is never applied twice, and `heimdall freeze` stops all actions at
+once, with no restart.
+
+This path is tested with the real policy engine and a fake Kubernetes API. It
+has not been run on the cluster yet, and there is no live mode: Heimdall
+still changes nothing.
 
 **Chaos suite.** Each scenario is a YAML file: how to inject the fault, which
 alerts must fire, the true root cause and the acceptable fixes. Parameters
@@ -127,7 +141,10 @@ with 7 tool calls. That is one run, not an accuracy figure.
 - The diagnosis accuracy target for M4 (8 of 10 on four scenarios) has not
   been measured. Running every scenario with a local model on the GPU is
   heavy for a laptop; it needs to be done in small batches.
-- s15 (a forced bad fix that must be rolled back) needs the executor from M6.
+- Dry-run mode has only been exercised in unit tests, not on the cluster.
+- Pull requests, human approval, verification and rollback (M6) are not
+  built. An action that needs approval is recorded and the incident escalated.
+- s15 (a forced bad fix that must be rolled back) needs M6.
 - The hold-out scenarios are deliberately not written by the author
   ([why](docs/decisions.md)).
 - `HighLatencyP95` uses one threshold for every service.

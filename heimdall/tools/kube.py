@@ -5,6 +5,7 @@ different ServiceAccount tokens: a read-only one for the investigator and an
 actor one for the executor. They share no state.
 """
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -56,3 +57,20 @@ class KubeClient:
     def get_text(self, path: str, **params: Any) -> str:
         params = {k: v for k, v in params.items() if v is not None}
         return self._check(self._client.get(path, params=params)).text
+
+    def patch(
+        self, path: str, body: Any, *, patch_type: str = "merge", dry_run: bool = False
+    ) -> dict[str, Any]:
+        """PATCH an object. `patch_type` is merge, strategic-merge or json.
+
+        With `dry_run`, the API server runs the whole request, admission
+        included, and persists nothing.
+        """
+        response = self._client.patch(
+            path,
+            content=json.dumps(body),
+            headers={"Content-Type": f"application/{patch_type}-patch+json"},
+            params={"dryRun": "All"} if dry_run else None,
+        )
+        result: dict[str, Any] = self._check(response).json()
+        return result

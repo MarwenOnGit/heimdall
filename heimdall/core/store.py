@@ -39,6 +39,26 @@ CREATE TABLE IF NOT EXISTS incidents (
     updated_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS incidents_by_state ON incidents (state);
+
+CREATE TABLE IF NOT EXISTS actions (
+    id              INTEGER PRIMARY KEY,
+    incident_id     TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    type            TEXT NOT NULL,
+    namespace       TEXT,
+    name            TEXT,
+    proposal_json   TEXT NOT NULL,
+    decision        TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    detail          TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS actions_by_incident ON actions (incident_id);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 

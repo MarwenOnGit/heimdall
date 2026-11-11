@@ -6,11 +6,18 @@ from typing import Any
 import httpx
 
 from heimdall.agent.investigator import Budget, Investigator
+from heimdall.agent.pipeline import Pipeline
+from heimdall.agent.planner import Planner
 from heimdall.config import Config
+from heimdall.core.actions import ActionStore
 from heimdall.core.audit import AuditLog
+from heimdall.core.incidents import IncidentManager
 from heimdall.core.models import Incident, ResourceRef
+from heimdall.executor.executor import Executor
 from heimdall.llm.base import LLM
 from heimdall.llm.ollama import OllamaLLM
+from heimdall.policy.gate import OpaHttpGate
+from heimdall.policy.input_builder import InputBuilder
 from heimdall.tools.dependencies import DependencyGraph, DependencyTools
 from heimdall.tools.git import GitTools
 from heimdall.tools.k8s import KubernetesTools
@@ -78,6 +85,34 @@ def first_look(graph: DependencyGraph, namespaces: frozenset[str]) -> FirstLook:
         return calls
 
     return collect
+
+
+def build_pipeline(
+    config: Config, audit: AuditLog, llm: LLM, manager: IncidentManager, actions: ActionStore
+) -> Pipeline | None:
+    """The remediation pipeline for the configured mode, or None in observe mode."""
+    if config.mode == "observe":
+        return None
+    if config.mode != "dry_run":
+        raise ValueError(
+            f"mode {config.mode!r} is not supported: only observe and dry_run exist so far"
+        )
+    if config.actor_token_file is None:
+        raise ValueError("dry_run mode needs HEIMDALL_ACTOR_TOKEN_FILE")
+    reader = read_only_kube(config)
+    # A second client with a different identity. It shares nothing with the
+    # read-only one.
+    actor = KubeClient.connect(
+        config.kube_url, config.actor_token_file.read_text().strip(), config.kube_ca_file or True
+    )
+    return Pipeline(
+        Planner(llm, audit),
+        InputBuilder(reader, actions, mode=config.mode),
+        OpaHttpGate(httpx.Client(base_url=config.opa_url, timeout=5)),
+        Executor(actor, reader, actions, audit, dry_run=True),
+        manager,
+        audit,
+    )
 
 
 def build_investigator(config: Config, audit: AuditLog, llm: LLM) -> Investigator:

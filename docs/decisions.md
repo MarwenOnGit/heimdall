@@ -111,3 +111,31 @@ all of it.
 Ollama listens on localhost only. A small relay container bound to the kind
 bridge address forwards to it, and Heimdall sends `Host: localhost` because
 Ollama refuses other host names. Nothing leaves the machine.
+
+## 16. Dry runs count toward the limits
+
+The policy limits how many writes an incident may have and forbids repeating
+an action within ten minutes. In dry-run mode those counters include dry
+runs. Otherwise a dry-run report would show actions that live mode would
+have refused.
+
+## 17. A plan stops at its first failure
+
+Proposals run in order. If one is denied, rejected by the API server, needs
+approval or fails, the rest are not attempted: later steps were chosen on
+the assumption that earlier ones worked.
+
+## 18. Rollback targets are judged by an approximation, for now
+
+The policy only allows a rollback to a revision that was healthy for ten
+minutes. Kubernetes does not record that. Until Heimdall tracks availability
+itself (the spec's "revision tracker"), a superseded revision is credited
+with the time until the next revision was created. A revision that was
+broken while it was current is over-credited. The admission policy still
+limits a rollback to images that were deployed from git.
+
+## 19. No live mode yet
+
+`HEIMDALL_MODE` accepts `observe` and `dry_run`; anything else is refused at
+startup. Live execution only makes sense together with verification and
+automatic rollback, which belong to the next milestone.
