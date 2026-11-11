@@ -182,15 +182,29 @@ default decision := "allow"
 
 decision := "deny" if count(deny) > 0
 
+# A human approval lifts "require_approval", and nothing else: a denied
+# action stays denied whoever approves it. `approved` is set by Heimdall only
+# after it has checked the approval token for this exact action.
 decision := "require_approval" if {
 	count(deny) == 0
 	count(require_approval) > 0
+	not approved
 }
+
+approved if input.approved == true
 
 reasons := sort(deny) if decision == "deny"
 
 reasons := sort(require_approval) if decision == "require_approval"
 
-reasons := [] if decision == "allow"
+reasons := sort({sprintf("approved by a human: %s", [r]) | some r in require_approval}) if {
+	decision == "allow"
+	count(require_approval) > 0
+}
+
+reasons := [] if {
+	decision == "allow"
+	count(require_approval) == 0
+}
 
 result := {"decision": decision, "reasons": reasons}

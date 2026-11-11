@@ -210,3 +210,21 @@ test_deny_wins_over_approval if {
 	redis := object.union(scale(0), {"current": object.union(base.current, {"stateful": true})})
 	decide(redis).decision == "deny"
 }
+
+# ---------------------------------------------------------- approval
+
+test_approval_lifts_require_approval if {
+	redis := object.union(scale(3), {"current": object.union(base.current, {"stateful": true}), "approved": true})
+	decide(redis) == {"decision": "allow", "reasons": ["approved by a human: target is stateful"]}
+}
+
+test_approval_never_lifts_a_denial if {
+	redis := object.union(scale(0), {"current": object.union(base.current, {"stateful": true}), "approved": true})
+	decide(redis).decision == "deny"
+	denied(object.union(base, {"frozen": true, "approved": true}), "frozen")
+}
+
+test_approved_flag_must_be_exactly_true if {
+	redis := object.union(scale(3), {"current": object.union(base.current, {"stateful": true}), "approved": "yes"})
+	decide(redis).decision == "require_approval"
+}
