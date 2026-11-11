@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from heimdall.core.models import ActionType, ResourceRef, RootCauseCategory
+from heimdall.core.models import ActionProposal, ActionType, ResourceRef, RootCauseCategory
 
 
 class _Strict(BaseModel):
@@ -112,6 +112,9 @@ class Scenario(_Strict):
     # PromQL expressions. Recovery holds when every one returns at least one
     # sample; the runner also requires all pods to be Ready.
     recovery_condition: list[str] = []
+    # A plan the harness forces on Heimdall instead of letting it plan, to
+    # test what happens after a wrong fix (s15). Needs live mode.
+    forced_plan: list[ActionProposal] = []
 
     def render(self, params: dict[str, Any]) -> "Scenario":
         """Return a copy with every `{placeholder}` filled from `params`."""

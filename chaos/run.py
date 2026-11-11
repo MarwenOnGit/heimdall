@@ -116,6 +116,19 @@ def label_run(scenario_id: str | None, scenario_set: str = "dev") -> None:
     cluster.kubectl("-n", "heimdall", "exec", "deploy/heimdall", "--", "heimdall", "label", *args)
 
 
+def force_plan(scenario: Scenario | None) -> None:
+    """Make Heimdall run in live mode with the scenario's forced plan, or put
+    it back to normal. Changing the environment restarts the pod."""
+    if scenario is None:
+        changes = ["HEIMDALL_FORCED_PLAN-", "HEIMDALL_MODE-"]
+    else:
+        proposals = [p.model_dump(mode="json", exclude_none=True) for p in scenario.forced_plan]
+        plan = json.dumps({"proposals": proposals})
+        changes = [f"HEIMDALL_FORCED_PLAN={plan}", "HEIMDALL_MODE=live"]
+    cluster.kubectl("-n", "heimdall", "set", "env", "deploy/heimdall", *changes)
+    cluster.kubectl("-n", "heimdall", "rollout", "status", "deploy/heimdall", "--timeout=180s")
+
+
 def run(
     scenario: Scenario, seed: int, keep: bool, agent: bool = False, scenario_set: str = "dev"
 ) -> dict[str, Any]:
@@ -136,6 +149,9 @@ def run(
         result["error"] = f"cluster not at baseline: {problems}"
         return result
 
+    forced = agent and bool(rendered.forced_plan)
+    if forced:
+        force_plan(rendered)
     if agent:
         label_run(scenario.id, scenario_set)
     time.sleep(params["offset_seconds"])
@@ -169,10 +185,18 @@ def run(
             result["grade"]["finished"] = bool(incidents) and all(
                 i["state"] in FINISHED_STATES for i in incidents
             )
+            if forced:
+                # The forced fix is wrong by design. The run is good when
+                # Heimdall noticed, undid it and handed over to a human.
+                result["grade"]["forced_fix_undone"] = bool(incidents) and all(
+                    i["state"] == "escalated" for i in incidents
+                )
             log(f"grade: {result['grade']}")
     finally:
         if agent:
             label_run(None)
+        if forced:
+            force_plan(None)
         if not keep:
             cluster.reset()
             leftover = cluster.wait_for_baseline(timeout=600)

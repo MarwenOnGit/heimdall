@@ -1,5 +1,6 @@
 """Builds the investigator and its tools from configuration."""
 
+import logging
 import sqlite3
 from collections.abc import Callable
 from typing import Any
@@ -8,7 +9,7 @@ import httpx
 
 from heimdall.agent.investigator import Budget, Investigator
 from heimdall.agent.pipeline import Pipeline
-from heimdall.agent.planner import Planner
+from heimdall.agent.planner import ForcedPlanner, Planner
 from heimdall.config import Config
 from heimdall.core.actions import ActionStore
 from heimdall.core.approvals import ApprovalStore
@@ -33,6 +34,8 @@ from heimdall.tools.kube import KubeClient, KubeError
 from heimdall.tools.loki import LokiTools
 from heimdall.tools.prometheus import PrometheusTools
 from heimdall.tools.registry import Tool, ToolRegistry
+
+log = logging.getLogger("heimdall.setup")
 
 # Kinds whose existence can be checked with the read-only identity.
 _PATHS = {
@@ -151,8 +154,12 @@ def build_pipeline(
         httpx.Client(base_url=config.prometheus_url, timeout=10),
         timeout_seconds=config.verify_timeout_seconds,
     )
+    planner: Planner | ForcedPlanner = Planner(llm, audit)
+    if config.forced_plan:
+        log.warning("HEIMDALL_FORCED_PLAN is set: the planner is bypassed (benchmark only)")
+        planner = ForcedPlanner.from_json(config.forced_plan, audit)
     return Pipeline(
-        Planner(llm, audit),
+        planner,
         InputBuilder(reader, actions, mode=config.mode, gitops=gitops, revisions=revisions),
         OpaHttpGate(httpx.Client(base_url=config.opa_url, timeout=5)),
         Executor(actor, reader, actions, audit, dry_run=not live, gitops=gitops),

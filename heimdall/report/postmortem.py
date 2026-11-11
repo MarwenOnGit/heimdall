@@ -227,7 +227,10 @@ def build(incident_id: str, events: Iterable[AuditEvent]) -> Postmortem:
                 f"{describe(ActionProposal.model_validate(d['proposal']))}: {d['reason']}"
                 for d in p.get("dropped", [])
             ]
-            note(event, "plan: " + ("; ".join(plan) or "nothing"))
+            forced = (
+                " (FORCED by the benchmark harness, planner bypassed)" if p.get("forced") else ""
+            )
+            note(event, "plan" + forced + ": " + ("; ".join(plan) or "nothing"))
 
         elif kind == EventType.POLICY_DECISION:
             proposal = ActionProposal.model_validate(p["proposal"])

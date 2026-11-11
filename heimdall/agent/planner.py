@@ -216,3 +216,39 @@ def describe(plan: Plan) -> str:
         )
         lines.append(f"{proposal.type} {json.dumps(details, sort_keys=True)}")
     return "\n".join(lines)
+
+
+class ForcedPlanner:
+    """Proposes a fixed plan, whatever the diagnosis. For the benchmark only.
+
+    Scenario s15 needs a wrong fix to be attempted so that verification and
+    undo can be observed. The model cannot be relied on to be wrong on cue,
+    and the real planner would drop the wrong fix, so the harness forces it.
+
+    A forced plan skips the planner's own limits and nothing else: the policy
+    gate, the API server, verification and undo all still apply. It is marked
+    as forced in the audit log, and so in the postmortem.
+    """
+
+    def __init__(self, proposals: list[ActionProposal], audit: AuditLog) -> None:
+        self._proposals = proposals
+        self._audit = audit
+
+    @classmethod
+    def from_json(cls, raw: str, audit: AuditLog) -> "ForcedPlanner":
+        return cls(_Reply.model_validate_json(raw).proposals, audit)
+
+    def plan(self, diagnosis: Diagnosis) -> Plan:
+        plan = Plan(list(self._proposals), reason="forced by the benchmark harness")
+        self._audit.append(
+            EventType.PROPOSAL,
+            {
+                "proposals": [p.model_dump(mode="json", exclude_none=True) for p in plan.proposals],
+                "dropped": [],
+                "reason": plan.reason,
+                "forced": True,
+            },
+            actor="benchmark",
+            incident_id=diagnosis.incident_id,
+        )
+        return plan

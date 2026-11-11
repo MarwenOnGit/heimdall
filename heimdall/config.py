@@ -48,6 +48,9 @@ class Config:
     # Anthropic provider only. Effort: low, medium, high, xhigh or max.
     llm_effort: str | None = None
     llm_fallbacks: bool = True
+    # Benchmark only (scenario s15): JSON `{"proposals": [...]}` that replaces
+    # the planner. Policy, admission, verification and undo still apply.
+    forced_plan: str | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -106,4 +109,5 @@ class Config:
             != "false",
             llm_effort=os.environ.get("HEIMDALL_LLM_EFFORT") or None,
             llm_fallbacks=os.environ.get("HEIMDALL_LLM_FALLBACKS", "true") != "false",
+            forced_plan=os.environ.get("HEIMDALL_FORCED_PLAN") or None,
         )

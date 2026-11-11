@@ -12,7 +12,7 @@ problem is undone and the incident is handed to a human.
 
 from dataclasses import dataclass, field
 
-from heimdall.agent.planner import Planner
+from heimdall.agent.planner import ForcedPlanner, Planner
 from heimdall.core.actions import CLUSTER_WRITES, ActionStatus, ActionStore, idempotency_key
 from heimdall.core.approvals import Approval, ApprovalStore
 from heimdall.core.audit import AuditLog, EventType
@@ -60,7 +60,7 @@ def describe(proposal: ActionProposal) -> str:
 class Pipeline:
     def __init__(
         self,
-        planner: Planner,
+        planner: Planner | ForcedPlanner,
         builder: InputBuilder,
         gate: PolicyGate,
         executor: Executor,
