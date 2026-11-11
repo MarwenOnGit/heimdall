@@ -106,6 +106,14 @@ class ApprovalStore:
         assert updated is not None  # noqa: S101 - just updated
         return updated
 
+    def authenticate(self, approval_id: str, token: str) -> Approval:
+        """Return the approval if the token is right; used to show a human
+        what they are being asked to approve."""
+        approval = self.get(approval_id)
+        if approval is None or not hmac.compare_digest(token, self.token(approval)):
+            raise ApprovalError("invalid approval id or token")
+        return approval
+
     def decide(self, approval_id: str, token: str, *, approve: bool) -> Approval:
         """Record a human's decision. Works once per approval."""
         self._conn.execute("BEGIN IMMEDIATE")
