@@ -3,7 +3,8 @@ description: A commit lowers the memory limit of {service} to {memory_mi}Mi, bel
 difficulty: easy
 parameters:
   service:
-    choice: [recommendationservice, emailservice, adservice]
+    # Only services whose normal memory use is well above the injected limit.
+    choice: [adservice, cartservice]
   memory_mi:
     int_range: [32, 48]
 inject:

@@ -100,7 +100,14 @@ def main() -> int:
         for scenario in scenarios:
             if args.summary_only or (scenario.id, seed) in load_results(RESULTS):
                 continue
-            result = run(scenario, seed, keep=False)
+            try:
+                result = run(scenario, seed, keep=False)
+            except Exception as e:  # noqa: BLE001 - one broken run must not stop the batch
+                result = {
+                    "scenario": scenario.id,
+                    "seed": seed,
+                    "error": f"{type(e).__name__}: {e}",
+                }
             stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
             path = RESULTS / f"{scenario.id}-seed{seed}-{stamp}.json"
             path.write_text(json.dumps(result, indent=2) + "\n")

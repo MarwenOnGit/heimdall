@@ -23,7 +23,7 @@ inject:
               - alert: LatencyBudgetBurn
                 expr: |
                   (heimdall:service_latency_ms:p95_rate5m{{namespace="boutique", service="{service}"}} > 0)
-                  and on () (time() % 120 < 50)
+                  and on () (vector(time()) % 120 < 50)
                 labels:
                   heimdall: "true"
                   severity: warning

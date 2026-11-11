@@ -5,7 +5,8 @@ description: >-
 difficulty: hard
 parameters:
   oom_service:
-    choice: [recommendationservice, emailservice, adservice]
+    # Only services whose normal memory use is well above the injected limit.
+    choice: [adservice, cartservice]
   memory_mi:
     int_range: [32, 48]
   image_service:

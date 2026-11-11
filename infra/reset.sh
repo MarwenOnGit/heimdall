@@ -44,6 +44,10 @@ phase="$(k -n argocd get application boutique -o jsonpath='{.status.operationSta
 [ "$phase" = "Succeeded" ] || die "Argo CD sync ended as ${phase:-unknown}"
 [ -n "${RESET_DEBUG:-}" ] && log "synced at $(($(date +%s) - start))s"
 
+# Files a scenario wrote into the Redis data volume.
+k -n boutique exec deploy/redis-cart -c redis -- sh -c 'rm -f /data/import-backup.rdb' \
+  >/dev/null 2>&1 || true
+
 # Replicas are ignored by Argo CD on purpose, so they are restored here.
 k -n boutique scale deploy --all --replicas=1 >/dev/null
 
