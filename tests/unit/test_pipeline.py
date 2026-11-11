@@ -13,11 +13,13 @@ from heimdall.core.incidents import IncidentManager
 from heimdall.core.models import ActionProposal, Alert, Diagnosis, IncidentState
 from heimdall.core.store import connect
 from heimdall.executor.executor import Executor
+from heimdall.executor.gitops import GitOps
 from heimdall.executor.verifier import Verification
 from heimdall.llm.base import Response
 from heimdall.policy.gate import OpaEvalGate
 from heimdall.policy.input_builder import InputBuilder
 from heimdall.tools.dependencies import DependencyGraph
+from tests.unit.fake_gitea import FakeGitea
 from tests.unit.fake_kube import IMAGE_V1, FakeKube
 
 OPA = Path(__file__).parents[2] / ".bin" / "opa"
@@ -71,6 +73,7 @@ class World:
         live: bool = False,
         recovers: list[bool] | None = None,
         approvals: bool = False,
+        gitea: FakeGitea | None = None,
     ) -> None:
         conn = connect(tmp_path / "db.sqlite")
         self.audit = AuditLog(conn)
@@ -81,6 +84,10 @@ class World:
         self.kube.add("redis-cart", stateful=True, replicas=0)
         self.llm = ScriptedLLM(proposals)
         # Revision 1 was created long before revision 2, so it counts as proven.
+        self.kube.applications = True
+        self.gitops = (
+            GitOps(gitea.client(), "heimdall/gitops", self.kube.client()) if gitea else None
+        )
         self.verifier = FakeVerifier(recovers or [])
         self.sent: list[tuple[str, str]] = []
         self.approvals = (
@@ -91,16 +98,18 @@ class World:
         )()
         self.pipeline = Pipeline(
             Planner(self.llm, self.audit),
-            InputBuilder(self.kube.client(), self.actions, mode="live" if live else "dry_run"),
+            InputBuilder(self.kube.client(), self.actions, mode="live" if live else "dry_run",
+                         gitops=self.gitops),
             OpaEvalGate(OPA),
             Executor(self.kube.client(), self.kube.client(), self.actions, self.audit,
-                     dry_run=not live),
+                     dry_run=not live, gitops=self.gitops),
             self.manager,
             self.audit,
             live=live,
             verifier=self.verifier,
             approvals=self.approvals,
             notifier=notifier,
+            gitops=self.gitops,
             public_url="http://heimdall.test",
         )  # fmt: skip
 
@@ -437,3 +446,130 @@ def test_in_dry_run_an_approved_action_is_still_only_a_dry_run(tmp_path: Path) -
     assert statuses(result) == [("scale_deployment", "allow", "dry_run")]
     assert world.kube.patches[0]["dry_run"] is True
     assert world.state(diagnosis) is IncidentState.ESCALATED
+
+
+# ------------------------------------------------------------------ gitops
+
+OVERRIDE = "online-boutique/overrides/frontend-image.yaml"
+KUSTOMIZATION = "online-boutique/kustomization.yaml"
+APPLICATION = "/apis/argoproj.io/v1alpha1/namespaces/argocd/applications/boutique"
+
+
+def repo_with_bad_release() -> FakeGitea:
+    gitea = FakeGitea({KUSTOMIZATION: "patches:\n- path: labels.yaml\n"})
+    gitea.commit(
+        "Release frontend v0.11.1",
+        {OVERRIDE: "image: frontend:v0.11.1\n",
+         KUSTOMIZATION: "patches:\n- path: labels.yaml\n- path: overrides/frontend-image.yaml\n"},
+    )  # fmt: skip
+    return gitea
+
+
+def release_world(tmp_path: Path, gitea: FakeGitea, **kwargs) -> tuple[World, Diagnosis]:
+    world = World(tmp_path, [proposal("rollback_deployment", to_revision=1),
+                             proposal("open_pr", summary="Revision 2 fails requests.")],
+                  gitea=gitea, **kwargs)  # fmt: skip
+    return world, world.diagnosed("bad_release", "frontend")
+
+
+def test_live_rollback_pauses_sync_then_opens_the_reconciling_pr(tmp_path: Path) -> None:
+    """The whole of scenario s04: mitigate live, then bring git in line."""
+    gitea = repo_with_bad_release()
+    world, diagnosis = release_world(tmp_path, gitea, live=True, recovers=[True])
+
+    result = world.pipeline.remediate(diagnosis)
+
+    assert statuses(result) == [
+        ("rollback_deployment", "allow", "executed"),
+        ("open_pr", "allow", "pr_opened"),
+    ]
+    # Sync is paused before the write that creates drift, not after.
+    paths = [p["path"] for p in world.kube.patches]
+    assert paths == [APPLICATION, "/apis/apps/v1/namespaces/boutique/deployments/frontend"]
+    assert world.kube.patches[0]["body"] == {"spec": {"syncPolicy": {"automated": None}}}
+    assert (
+        gitea.pulls[0]["title"]
+        == 'Revert "Release frontend v0.11.1" (' + diagnosis.incident_id + ")"
+    )
+    assert OVERRIDE in gitea.files("main")  # nothing is merged by Heimdall
+    assert world.state(diagnosis) is IncidentState.MITIGATED
+
+
+def test_merged_pr_resumes_sync_and_resolves_the_incident(tmp_path: Path) -> None:
+    gitea = repo_with_bad_release()
+    world, diagnosis = release_world(tmp_path, gitea, live=True, recovers=[True])
+    world.pipeline.remediate(diagnosis)
+    assert world.pipeline.reconcile_merged(world.actions) == []  # not merged yet
+
+    gitea.merge(1)
+    closed = world.pipeline.reconcile_merged(world.actions)
+
+    assert closed == [diagnosis.incident_id]
+    assert world.state(diagnosis) is IncidentState.RESOLVED
+    assert world.kube.patches[-1]["body"] == {
+        "spec": {"syncPolicy": {"automated": {"prune": True, "selfHeal": False}}}
+    }
+    assert world.pipeline.reconcile_merged(world.actions) == []
+
+
+def test_failed_live_rollback_is_undone_and_sync_is_resumed(tmp_path: Path) -> None:
+    gitea = repo_with_bad_release()
+    world, diagnosis = release_world(tmp_path, gitea, live=True, recovers=[False])
+
+    result = world.pipeline.remediate(diagnosis)
+
+    assert statuses(result) == [("rollback_deployment", "allow", "undone")]
+    bodies = [p["body"] for p in world.kube.patches if p["path"] == APPLICATION]
+    assert bodies[0]["spec"]["syncPolicy"]["automated"] is None
+    assert bodies[-1]["spec"]["syncPolicy"]["automated"] == {"prune": True, "selfHeal": False}
+    assert gitea.pulls == []
+
+
+def test_dry_run_describes_the_pull_request_without_opening_it(tmp_path: Path) -> None:
+    gitea = repo_with_bad_release()
+    world, diagnosis = release_world(tmp_path, gitea)
+
+    result = world.pipeline.remediate(diagnosis)
+
+    assert statuses(result)[1] == ("open_pr", "allow", "recorded")
+    assert "would open a pull request reverting" in result.steps[1][2].detail
+    assert gitea.pulls == []
+    assert all(p["path"] != APPLICATION for p in world.kube.patches)  # no pause in dry run
+
+
+def test_pull_request_with_nothing_to_revert_is_denied(tmp_path: Path) -> None:
+    gitea = FakeGitea({KUSTOMIZATION: "patches: []\n"})
+    world = World(tmp_path, [proposal("open_pr", summary="x")], gitea=gitea, live=True)
+    diagnosis = world.diagnosed("bad_config", "frontend")
+
+    result = world.pipeline.remediate(diagnosis)
+
+    assert statuses(result) == [("open_pr", "deny", "denied")]
+    assert "no change to frontend to revert" in result.steps[0][2].detail
+
+
+def test_oversized_revert_is_denied_by_policy(tmp_path: Path) -> None:
+    gitea = FakeGitea({KUSTOMIZATION: "patches: []\n"})
+    big = "".join(f"line {i}\n" for i in range(80))
+    listed = "patches:\n- path: overrides/frontend-image.yaml\n"
+    gitea.commit("Rewrite frontend", {OVERRIDE: big, KUSTOMIZATION: listed})
+    world = World(tmp_path, [proposal("open_pr", summary="x")], gitea=gitea, live=True)
+    diagnosis = world.diagnosed("bad_config", "frontend")
+
+    result = world.pipeline.remediate(diagnosis)
+
+    assert statuses(result) == [("open_pr", "deny", "denied")]
+    assert "more than 50" in result.steps[0][2].detail
+    assert gitea.pulls == []
+
+
+def test_write_is_not_attempted_if_sync_cannot_be_paused(tmp_path: Path) -> None:
+    gitea = repo_with_bad_release()
+    world, diagnosis = release_world(tmp_path, gitea, live=True, recovers=[True])
+    world.kube.applications = False  # the actor is not allowed to patch the Application
+
+    result = world.pipeline.remediate(diagnosis)
+
+    assert statuses(result) == [("rollback_deployment", "allow", "failed")]
+    assert "could not pause GitOps sync" in result.steps[0][2].detail
+    assert not any("deployments" in p["path"] for p in world.kube.patches)

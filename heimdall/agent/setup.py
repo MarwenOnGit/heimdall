@@ -16,6 +16,7 @@ from heimdall.core.audit import AuditLog
 from heimdall.core.incidents import IncidentManager
 from heimdall.core.models import Incident, ResourceRef
 from heimdall.executor.executor import Executor
+from heimdall.executor.gitops import GitOps
 from heimdall.executor.verifier import Verifier
 from heimdall.llm.base import LLM
 from heimdall.llm.ollama import OllamaLLM
@@ -127,21 +128,30 @@ def build_pipeline(
     actor = KubeClient.connect(
         config.kube_url, config.actor_token_file.read_text().strip(), config.kube_ca_file or True
     )
+    gitops = None
+    if config.gitea_url and config.gitea_token:
+        git_client = httpx.Client(
+            base_url=config.gitea_url,
+            headers={"Authorization": f"token {config.gitea_token}"},
+            timeout=15,
+        )
+        gitops = GitOps(git_client, config.gitops_repo, actor)
     verifier = Verifier(
         httpx.Client(base_url=config.prometheus_url, timeout=10),
         timeout_seconds=config.verify_timeout_seconds,
     )
     return Pipeline(
         Planner(llm, audit),
-        InputBuilder(reader, actions, mode=config.mode),
+        InputBuilder(reader, actions, mode=config.mode, gitops=gitops),
         OpaHttpGate(httpx.Client(base_url=config.opa_url, timeout=5)),
-        Executor(actor, reader, actions, audit, dry_run=not live),
+        Executor(actor, reader, actions, audit, dry_run=not live, gitops=gitops),
         manager,
         audit,
         live=live,
         verifier=verifier,
         approvals=approvals,
         notifier=build_notifier(config),
+        gitops=gitops,
         public_url=config.public_url,
     )
 

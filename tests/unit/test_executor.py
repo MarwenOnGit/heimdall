@@ -228,7 +228,7 @@ def test_escalation_and_pull_requests_are_recorded_not_run(
     pr = executor.execute("inc_1", proposal("open_pr", summary="revert the commit"), ALLOW, None)
 
     assert kube.patches == []
-    assert pr.status is ActionStatus.RECORDED and "not implemented yet" in pr.detail
+    assert pr.status is ActionStatus.RECORDED and "no git server configured" in pr.detail
     assert [a.status for a in actions.for_incident("inc_1")] == [ActionStatus.RECORDED] * 2
 
 

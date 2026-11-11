@@ -13,20 +13,27 @@ problem is undone and the incident is handed to a human.
 from dataclasses import dataclass, field
 
 from heimdall.agent.planner import Planner
-from heimdall.core.actions import CLUSTER_WRITES, ActionStatus, idempotency_key
+from heimdall.core.actions import CLUSTER_WRITES, ActionStatus, ActionStore, idempotency_key
 from heimdall.core.approvals import Approval, ApprovalStore
 from heimdall.core.audit import AuditLog, EventType
 from heimdall.core.incidents import TRANSITIONS, IncidentManager
 from heimdall.core.models import ActionProposal, ActionType, Diagnosis, IncidentState
-from heimdall.executor.executor import Executor, Outcome
+from heimdall.executor.executor import DRIFT_CREATING, Executor, Outcome
+from heimdall.executor.gitops import GitOps, GitOpsError
 from heimdall.executor.verifier import Verifier, recovery_checks
 from heimdall.notify.webhook import Notifier, NullNotifier
 from heimdall.policy.gate import Decision, PolicyGate
-from heimdall.policy.input_builder import InputBuilder, TargetMissing
+from heimdall.policy.input_builder import CannotBuild, InputBuilder
+from heimdall.tools.kube import KubeError
 
 S = IncidentState
 # Outcomes after which the next proposal may still be handled.
-CONTINUE = {ActionStatus.DRY_RUN, ActionStatus.EXECUTED, ActionStatus.RECORDED}
+CONTINUE = {
+    ActionStatus.DRY_RUN,
+    ActionStatus.EXECUTED,
+    ActionStatus.RECORDED,
+    ActionStatus.PR_OPENED,
+}
 
 
 @dataclass
@@ -63,6 +70,7 @@ class Pipeline:
         verifier: Verifier | None = None,
         approvals: ApprovalStore | None = None,
         notifier: Notifier | None = None,
+        gitops: GitOps | None = None,
         public_url: str = "http://localhost:8000",
     ) -> None:
         if live and verifier is None:
@@ -77,6 +85,7 @@ class Pipeline:
         self._verifier = verifier
         self._approvals = approvals
         self._notifier = notifier or NullNotifier()
+        self._gitops = gitops
         self._public_url = public_url.rstrip("/")
 
     # ------------------------------------------------------------ entry
@@ -176,8 +185,8 @@ class Pipeline:
         version = None
         try:
             built = self._builder.build(proposal, diagnosis)
-        except TargetMissing as e:
-            decision = Decision(decision="deny", reasons=[f"{e} does not exist"])
+        except CannotBuild as e:
+            decision = Decision(decision="deny", reasons=[str(e)])
         else:
             version = built.resource_version
             if approval is not None and version != approval.resource_version:
@@ -227,6 +236,8 @@ class Pipeline:
             return outcome
 
         undo = self._executor.undo(incident_id, proposal)
+        if undo.status is ActionStatus.UNDONE and proposal.type in DRIFT_CREATING:
+            self._resume_sync(incident_id)  # the cluster matches git again
         self._move(incident_id, S.ROLLED_BACK, f"{describe(proposal)} did not fix the problem")
         result.rolled_back = True
         failing = ", ".join(verification.failing)
@@ -257,6 +268,47 @@ class Pipeline:
             return S.RESOLVED, summary
         # Dry runs change nothing, and escalations and pull requests need a person.
         return S.ESCALATED, summary
+
+    # ------------------------------------------------------------ gitops
+
+    def _resume_sync(self, incident_id: str) -> None:
+        if self._gitops is None:
+            return
+        try:
+            self._gitops.resume_sync()
+        except (GitOpsError, KubeError) as e:
+            self._notifier.send(
+                f"Action needed: {incident_id}",
+                f"Argo CD automatic sync is still paused and could not be resumed: {e}",
+            )
+
+    def reconcile_merged(self, actions: ActionStore) -> list[str]:
+        """Close mitigated incidents whose pull request a human has merged:
+        git and the cluster agree again, so sync is resumed and the incident
+        is resolved. Returns the ids of the incidents that were closed."""
+        if self._gitops is None:
+            return []
+        closed = []
+        for incident in self._manager.all(active_only=True):
+            if incident.state is not S.MITIGATED:
+                continue
+            numbers = [
+                a.previous["pull_request"]
+                for a in actions.for_incident(incident.id)
+                if a.status is ActionStatus.PR_OPENED and a.previous
+            ]
+            try:
+                merged = bool(numbers) and all(self._gitops.merged(n) for n in numbers)
+            except GitOpsError:
+                continue
+            if merged:
+                self._resume_sync(incident.id)
+                self._finish(
+                    incident.id, Remediation(), S.RESOLVED,
+                    "the pull request was merged; git and the cluster agree again",
+                )  # fmt: skip
+                closed.append(incident.id)
+        return closed
 
     # ---------------------------------------------------------- helpers
 

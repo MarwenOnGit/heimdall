@@ -80,9 +80,15 @@ def build(config: Config) -> Heimdall:
     llm = build_llm(config)
     if llm is not None:
         investigator = build_investigator(config, audit, llm)
-        pipeline = build_pipeline(config, audit, llm, incidents, ActionStore(conn), approvals)
+        actions = ActionStore(conn)
+        pipeline = build_pipeline(config, audit, llm, incidents, actions, approvals)
         worker = Worker(
-            incidents, investigator, conn, settle_seconds=config.settle_seconds, pipeline=pipeline
+            incidents,
+            investigator,
+            conn,
+            settle_seconds=config.settle_seconds,
+            pipeline=pipeline,
+            actions=actions,
         )
 
     def on_decision(approval: Approval, approved: bool) -> None:

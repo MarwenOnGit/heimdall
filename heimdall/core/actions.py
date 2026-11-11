@@ -31,7 +31,8 @@ CLUSTER_WRITES = frozenset(
 class ActionStatus(StrEnum):
     DRY_RUN = "dry_run"  # accepted by the API server in dry-run mode
     EXECUTED = "executed"
-    RECORDED = "recorded"  # nothing to run: escalate, none, or a PR not yet implemented
+    RECORDED = "recorded"  # nothing to run: escalate, none, or a PR that was only described
+    PR_OPENED = "pr_opened"
     AWAITING_APPROVAL = "awaiting_approval"
     DENIED = "denied"
     REJECTED_BY_API = "rejected_by_api"  # RBAC or the admission policy said no

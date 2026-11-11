@@ -16,10 +16,14 @@ from typing import Any
 from heimdall.core.actions import RAN, ActionStatus, ActionStore
 from heimdall.core.audit import AuditLog, EventType
 from heimdall.core.models import ActionProposal, ActionType
+from heimdall.executor.gitops import GitOps, GitOpsError
 from heimdall.policy.gate import Decision
 from heimdall.tools.kube import KubeClient, KubeError
 
 RESTART_ANNOTATION = "kubectl.kubernetes.io/restartedAt"
+# Actions that leave the cluster different from what git describes. Restarts
+# and replica counts are ignored by Argo CD and are not drift.
+DRIFT_CREATING = frozenset({ActionType.ROLLBACK_DEPLOYMENT, ActionType.PATCH_RESOURCES})
 
 
 @dataclass(frozen=True)
@@ -39,8 +43,10 @@ class Executor:
         audit: AuditLog,
         *,
         dry_run: bool = True,
+        gitops: GitOps | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        self._gitops = gitops
         self._actor = actor
         self._reader = reader
         self._actions = actions
@@ -67,8 +73,10 @@ class Executor:
             outcome = Outcome(ActionStatus.DENIED, "; ".join(decision.reasons))
         elif decision.decision == "require_approval":
             outcome = Outcome(ActionStatus.AWAITING_APPROVAL, "; ".join(decision.reasons))
-        elif proposal.target is None or proposal.type is ActionType.OPEN_PR:
-            outcome = Outcome(ActionStatus.RECORDED, self._describe_passive(proposal))
+        elif proposal.type is ActionType.OPEN_PR:
+            outcome = self._open_pr(incident_id, proposal)
+        elif proposal.target is None:
+            outcome = Outcome(ActionStatus.RECORDED, proposal.summary or proposal.justification)
         else:
             earlier = self._actions.find(incident_id, proposal)
             if earlier is not None and earlier.status in RAN:
@@ -95,10 +103,25 @@ class Executor:
         )
         return outcome
 
-    def _describe_passive(self, proposal: ActionProposal) -> str:
-        if proposal.type is ActionType.OPEN_PR:
-            return "pull requests are not implemented yet; a human should make this change"
-        return proposal.summary or proposal.justification
+    def _open_pr(self, incident_id: str, proposal: ActionProposal) -> Outcome:
+        if self._gitops is None or proposal.target is None:
+            return Outcome(
+                ActionStatus.RECORDED, "no git server configured; a human should make this change"
+            )
+        try:
+            if self._dry_run:
+                revert = self._gitops.plan_revert(proposal.target)
+                return Outcome(
+                    ActionStatus.RECORDED,
+                    f"dry run: would open a pull request reverting {revert.commit[:10]} "
+                    f"({revert.message!r}, {revert.diff_lines} lines)",
+                )
+            pr = self._gitops.open_revert_pr(
+                incident_id, proposal.target, proposal.summary or proposal.justification
+            )
+        except GitOpsError as e:
+            return Outcome(ActionStatus.FAILED, f"could not open the pull request: {e}")
+        return Outcome(ActionStatus.PR_OPENED, pr.url, {"pull_request": pr.number})
 
     # -------------------------------------------------------------- writes
 
@@ -109,6 +132,14 @@ class Executor:
             path, body, patch_type = self._request(proposal, base)
         except KubeError as e:
             return Outcome(ActionStatus.FAILED, f"could not prepare the change: {e.message}")
+        if not self._dry_run and self._gitops is not None and proposal.type in DRIFT_CREATING:
+            # After this write the cluster will differ from git. Stop Argo CD
+            # from syncing on its own first, or the next unrelated commit
+            # would put the broken state back. No pause, no write.
+            try:
+                self._gitops.pause_sync()
+            except (GitOpsError, KubeError) as e:
+                return Outcome(ActionStatus.FAILED, f"could not pause GitOps sync: {e}")
         if resource_version is not None:
             # Makes the write conditional: the API server answers 409 if the
             # object changed since the policy gate read it.

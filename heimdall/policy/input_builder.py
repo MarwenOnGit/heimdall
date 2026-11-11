@@ -12,14 +12,19 @@ from datetime import UTC, datetime
 from typing import Any
 
 from heimdall.core.actions import ActionStore
-from heimdall.core.models import ActionProposal, Diagnosis, ResourceRef
+from heimdall.core.models import ActionProposal, ActionType, Diagnosis, ResourceRef
+from heimdall.executor.gitops import GitOps, GitOpsError
 from heimdall.tools.k8s import MESH_CONTAINERS
 from heimdall.tools.kube import KubeClient, KubeError
 
 STATEFUL_LABEL = "heimdall.io/stateful"
 
 
-class TargetMissing(Exception):
+class CannotBuild(Exception):
+    """The proposal cannot be evaluated at all; it is denied with this reason."""
+
+
+class TargetMissing(CannotBuild):
     """The Deployment a proposal targets does not exist."""
 
 
@@ -43,14 +48,22 @@ class InputBuilder:
         actions: ActionStore,
         *,
         mode: str,
-        files_for: Callable[[ResourceRef], list[str]] = lambda resource: [],
+        gitops: GitOps | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._kube = kube
         self._actions = actions
         self._mode = mode
-        self._files_for = files_for
+        self._gitops = gitops
         self._clock = clock
+
+    def _files_for(self, resource: ResourceRef) -> list[str]:
+        if self._gitops is None:
+            return []
+        try:
+            return self._gitops.files_for(resource)
+        except GitOpsError as e:
+            raise CannotBuild(str(e)) from e
 
     def build(self, proposal: ActionProposal, diagnosis: Diagnosis) -> PolicyInput:
         resources = [c.affected_resource for c in diagnosis.root_causes if c.affected_resource]
@@ -73,7 +86,18 @@ class InputBuilder:
             "frozen": self._actions.frozen(),
         }
         version = None
-        if proposal.target is not None:
+        if proposal.type is ActionType.OPEN_PR and proposal.target is not None:
+            # What the pull request would contain is worked out here, from
+            # git, so the policy judges the real change and not a description.
+            if self._gitops is None:
+                data["action"].update(files=[], diff_lines=0)
+            else:
+                try:
+                    revert = self._gitops.plan_revert(proposal.target)
+                except GitOpsError as e:
+                    raise CannotBuild(str(e)) from e
+                data["action"].update(files=revert.files, diff_lines=revert.diff_lines)
+        elif proposal.target is not None:
             deployment = self._deployment(proposal.target)
             version = deployment["metadata"].get("resourceVersion")
             data["current"] = self._current(deployment, proposal.container)
