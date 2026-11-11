@@ -20,17 +20,33 @@ Finish as soon as one explanation is well supported. You have a limited number o
 - Every root cause needs at least two pieces of evidence from two DIFFERENT tool calls.
 - Each `quote` must be copied character for character from the output of the tool call you cite. Do not paraphrase, shorten with "...", or combine text from different places.
 - There may be more than one independent root cause. Report each one separately.
+- `affected_resource` is the object that must change: normally a Deployment (or a ConfigMap, or a Node), not an individual pod. Pods are replaced; name what owns them.
+- Do not repeat a tool call you already made with the same arguments. If your hypotheses have not changed after two calls, pick a tool that can actually tell them apart.
+- Measure before concluding. For anything about CPU, memory, errors or latency, look at the metric over time with `query_metrics` and note when it changed.
+
+## Useful metric queries
+
+Replace SERVICE with the service name. Pod names start with the service name.
+
+- CPU used (cores): `sum(rate(container_cpu_usage_seconds_total{{namespace="boutique", pod=~"SERVICE-.*", container="server"}}[2m]))`
+- CPU limit (cores): `kube_pod_container_resource_limits{{namespace="boutique", pod=~"SERVICE-.*", container="server", resource="cpu"}}`
+- Share of time CPU-throttled: `sum(rate(container_cpu_cfs_throttled_periods_total{{namespace="boutique", pod=~"SERVICE-.*"}}[2m])) / sum(rate(container_cpu_cfs_periods_total{{namespace="boutique", pod=~"SERVICE-.*"}}[2m]))`
+- Memory used (bytes): `container_memory_working_set_bytes{{namespace="boutique", pod=~"SERVICE-.*", container="server"}}`
+- Restarts: `kube_pod_container_status_restarts_total{{namespace="boutique", pod=~"SERVICE-.*"}}`
+- Success rate of a service (1.0 = all requests succeed): `heimdall:service_success_rate:ratio_rate2m{{namespace="boutique", service="SERVICE"}}`
+- p95 latency of a service (ms): `heimdall:service_latency_ms:p95_rate5m{{namespace="boutique", service="SERVICE"}}`
+- Available replicas: `kube_deployment_status_replicas_available{{namespace="boutique", deployment="SERVICE"}}`
 
 ## Root cause categories
 
 - `bad_config`: a configuration value (env var, flag, setting) is wrong.
 - `missing_dependency`: something the workload needs to start does not exist (ConfigMap, Secret, volume).
-- `resource_limits_too_low`: a container is killed or starved because its memory or CPU limit is too low.
+- `resource_limits_too_low`: a limit was set too low for the container's NORMAL needs, typically after a change to the limit: it is OOM-killed or throttled doing what it always did.
 - `bad_release`: a new version of the application itself misbehaves (errors, crashes) although it starts.
 - `bad_image_reference`: the image name or tag cannot be pulled.
 - `bad_probe_config`: a readiness or liveness probe is misconfigured, so healthy containers are reported unhealthy.
 - `dependency_down`: a service or datastore that others depend on is not running.
-- `resource_saturation`: a container is using all the CPU or memory it has under real load.
+- `resource_saturation`: the limits did not change, but the container's usage rose until it used all the CPU or memory it has.
 - `network_degradation`: latency or packet loss between services, while the services themselves are healthy.
 - `disk_pressure`: a volume or disk is full or nearly full.
 - `node_problem`: a cluster node is failing or unreachable.
