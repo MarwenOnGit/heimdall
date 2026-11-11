@@ -31,9 +31,15 @@ class Config:
     settle_seconds: float
     max_tool_calls: int
     max_investigation_seconds: float
-    # observe: diagnose only. dry_run: also plan, check policy, and send each
-    # allowed action to the API server as a dry run. Live mode does not exist yet.
+    # observe: diagnose only.
+    # dry_run: also plan, check policy, and send each allowed action to the
+    #   API server as a dry run. Nothing changes.
+    # live: run allowed actions for real, verify each, undo what does not help.
     mode: str
+    approval_secret: str
+    webhook_url: str | None
+    public_url: str
+    verify_timeout_seconds: float
     actor_token_file: Path | None
     opa_url: str
 
@@ -82,6 +88,10 @@ class Config:
                 os.environ.get("HEIMDALL_MAX_INVESTIGATION_SECONDS", "240")
             ),
             mode=os.environ.get("HEIMDALL_MODE", "observe"),
+            approval_secret=os.environ.get("HEIMDALL_APPROVAL_SECRET", ""),
+            webhook_url=os.environ.get("HEIMDALL_WEBHOOK") or None,
+            public_url=os.environ.get("HEIMDALL_PUBLIC_URL", "http://localhost:8000"),
+            verify_timeout_seconds=float(os.environ.get("HEIMDALL_VERIFY_TIMEOUT_SECONDS", "300")),
             actor_token_file=path("HEIMDALL_ACTOR_TOKEN_FILE"),
             opa_url=os.environ.get("HEIMDALL_OPA_URL", "http://127.0.0.1:8181"),
         )

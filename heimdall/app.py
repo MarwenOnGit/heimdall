@@ -6,12 +6,18 @@ from dataclasses import dataclass
 import httpx
 from fastapi import FastAPI
 
-from heimdall.agent.setup import build_investigator, build_llm, build_pipeline
+from heimdall.agent.setup import (
+    build_approvals,
+    build_investigator,
+    build_llm,
+    build_pipeline,
+)
 from heimdall.agent.worker import Worker
 from heimdall.api import create_app
 from heimdall.config import Config
 from heimdall.core import anchor as anchoring
 from heimdall.core.actions import ActionStore
+from heimdall.core.approvals import Approval
 from heimdall.core.audit import AuditLog
 from heimdall.core.confirm import PrometheusConfirmer
 from heimdall.core.incidents import IncidentManager
@@ -65,16 +71,29 @@ def build(config: Config) -> Heimdall:
         )
 
     confirmer = PrometheusConfirmer(httpx.Client(base_url=config.prometheus_url, timeout=10))
-    api = create_app(alert_token=config.alert_token, manager=incidents, confirmer=confirmer)
     # Pick up anything a previous run left unfinished.
     incidents.reconcile()
 
+    approvals = build_approvals(config, conn)
     worker = None
+    pipeline = None
     llm = build_llm(config)
     if llm is not None:
         investigator = build_investigator(config, audit, llm)
-        pipeline = build_pipeline(config, audit, llm, incidents, ActionStore(conn))
+        pipeline = build_pipeline(config, audit, llm, incidents, ActionStore(conn), approvals)
         worker = Worker(
             incidents, investigator, conn, settle_seconds=config.settle_seconds, pipeline=pipeline
         )
+
+    def on_decision(approval: Approval, approved: bool) -> None:
+        if pipeline is not None:
+            pipeline.resume(approval, approved=approved)
+
+    api = create_app(
+        alert_token=config.alert_token,
+        manager=incidents,
+        confirmer=confirmer,
+        approvals=approvals if pipeline is not None else None,
+        on_decision=on_decision,
+    )
     return Heimdall(config, conn, audit, incidents, anchorer, gitea_anchors, api, worker)

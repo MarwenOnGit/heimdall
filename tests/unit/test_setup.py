@@ -34,9 +34,21 @@ def test_observe_mode_has_no_pipeline(tmp_path: Path, monkeypatch: pytest.Monkey
     assert build(tmp_path, monkeypatch, mode="observe") is None
 
 
-def test_live_mode_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    with pytest.raises(ValueError, match="only observe and dry_run"):
-        build(tmp_path, monkeypatch, mode="live")
+def test_unknown_mode_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError, match="unknown mode"):
+        build(tmp_path, monkeypatch, mode="yolo")
+
+
+def test_live_mode_also_needs_the_actor_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ValueError, match="HEIMDALL_ACTOR_TOKEN_FILE"):
+        build(tmp_path, monkeypatch, mode="live", actor_token_file=None)
+
+    actor = tmp_path / "actor-token"
+    actor.write_text("actor-token\n")
+    pipeline = build(tmp_path, monkeypatch, mode="live", actor_token_file=actor)
+    assert pipeline is not None and pipeline._live  # noqa: SLF001
 
 
 def test_dry_run_needs_a_separate_actor_identity(

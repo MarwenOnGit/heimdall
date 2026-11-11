@@ -1,8 +1,9 @@
-"""HTTP API: alert ingest and Heimdall's own metrics."""
+"""HTTP API: alert ingest, human approvals, and Heimdall's own metrics."""
 
 import hmac
 import threading
-from typing import Annotated
+from collections.abc import Callable
+from typing import Annotated, Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Response, status
 from prometheus_client import (
@@ -12,13 +13,27 @@ from prometheus_client import (
     Gauge,
     generate_latest,
 )
+from pydantic import BaseModel
 
+from heimdall.core.approvals import Approval, ApprovalError, ApprovalStatus, ApprovalStore
 from heimdall.core.confirm import AlertConfirmer
 from heimdall.core.incidents import IncidentManager
 from heimdall.core.models import AlertmanagerWebhook, IncidentState
 
 
-def create_app(*, alert_token: str, manager: IncidentManager, confirmer: AlertConfirmer) -> FastAPI:
+class ApprovalDecision(BaseModel):
+    token: str
+    decision: Literal["approve", "reject"]
+
+
+def create_app(
+    *,
+    alert_token: str,
+    manager: IncidentManager,
+    confirmer: AlertConfirmer,
+    approvals: ApprovalStore | None = None,
+    on_decision: Callable[[Approval, bool], object] | None = None,
+) -> FastAPI:
     if not alert_token:
         raise ValueError("an alert token is required; refusing to run an open ingest endpoint")
 
@@ -78,5 +93,37 @@ def create_app(*, alert_token: str, manager: IncidentManager, confirmer: AlertCo
         # Answer immediately; confirmation and correlation happen afterwards.
         background.add_task(process, payload)
         return {"accepted": len(payload.alerts)}
+
+    if approvals is not None:
+        # Reading shows what is being asked and changes nothing, so a chat
+        # client that fetches the link for a preview cannot approve anything.
+        # Deciding takes a POST with the token in the body.
+        @app.get("/approvals/{approval_id}")
+        def show_approval(approval_id: str, token: str = "") -> dict[str, object]:
+            try:
+                approval = approvals.authenticate(approval_id, token)
+            except ApprovalError as e:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+            return {
+                "incident": approval.incident_id,
+                "status": approval.status,
+                "expires_at": approval.expires_at.isoformat(),
+                "action": approval.proposal.model_dump(mode="json", exclude_none=True),
+            }
+
+        @app.post("/approvals/{approval_id}")
+        def decide_approval(
+            approval_id: str, body: ApprovalDecision, background: BackgroundTasks
+        ) -> dict[str, str]:
+            try:
+                approval = approvals.decide(
+                    approval_id, body.token, approve=body.decision == "approve"
+                )
+            except ApprovalError as e:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+            if on_decision is not None:
+                approved = approval.status is ApprovalStatus.APPROVED
+                background.add_task(on_decision, approval, approved)
+            return {"status": approval.status}
 
     return app

@@ -110,6 +110,8 @@ class Worker:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
+                if self._pipeline is not None:
+                    self._pipeline.expire_approvals()
                 if self.run_once() is None:
                     self._stop.wait(self._poll)
             except Exception:

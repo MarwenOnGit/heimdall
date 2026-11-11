@@ -1,5 +1,6 @@
 """Builds the investigator and its tools from configuration."""
 
+import sqlite3
 from collections.abc import Callable
 from typing import Any
 
@@ -10,12 +11,15 @@ from heimdall.agent.pipeline import Pipeline
 from heimdall.agent.planner import Planner
 from heimdall.config import Config
 from heimdall.core.actions import ActionStore
+from heimdall.core.approvals import ApprovalStore
 from heimdall.core.audit import AuditLog
 from heimdall.core.incidents import IncidentManager
 from heimdall.core.models import Incident, ResourceRef
 from heimdall.executor.executor import Executor
+from heimdall.executor.verifier import Verifier
 from heimdall.llm.base import LLM
 from heimdall.llm.ollama import OllamaLLM
+from heimdall.notify.webhook import Notifier, NullNotifier, WebhookNotifier
 from heimdall.policy.gate import OpaHttpGate
 from heimdall.policy.input_builder import InputBuilder
 from heimdall.tools.dependencies import DependencyGraph, DependencyTools
@@ -87,31 +91,58 @@ def first_look(graph: DependencyGraph, namespaces: frozenset[str]) -> FirstLook:
     return collect
 
 
+def build_notifier(config: Config) -> Notifier:
+    if config.webhook_url:
+        return WebhookNotifier(httpx.Client(timeout=10), config.webhook_url)
+    return NullNotifier()
+
+
+def build_approvals(config: Config, conn: sqlite3.Connection) -> ApprovalStore | None:
+    """Without a secret there is no way to approve, and actions that need
+    approval are escalated instead."""
+    if not config.approval_secret:
+        return None
+    return ApprovalStore(conn, config.approval_secret.encode())
+
+
 def build_pipeline(
-    config: Config, audit: AuditLog, llm: LLM, manager: IncidentManager, actions: ActionStore
+    config: Config,
+    audit: AuditLog,
+    llm: LLM,
+    manager: IncidentManager,
+    actions: ActionStore,
+    approvals: ApprovalStore | None = None,
 ) -> Pipeline | None:
     """The remediation pipeline for the configured mode, or None in observe mode."""
     if config.mode == "observe":
         return None
-    if config.mode != "dry_run":
-        raise ValueError(
-            f"mode {config.mode!r} is not supported: only observe and dry_run exist so far"
-        )
+    if config.mode not in ("dry_run", "live"):
+        raise ValueError(f"unknown mode {config.mode!r}: use observe, dry_run or live")
     if config.actor_token_file is None:
-        raise ValueError("dry_run mode needs HEIMDALL_ACTOR_TOKEN_FILE")
+        raise ValueError(f"{config.mode} mode needs HEIMDALL_ACTOR_TOKEN_FILE")
+    live = config.mode == "live"
     reader = read_only_kube(config)
     # A second client with a different identity. It shares nothing with the
     # read-only one.
     actor = KubeClient.connect(
         config.kube_url, config.actor_token_file.read_text().strip(), config.kube_ca_file or True
     )
+    verifier = Verifier(
+        httpx.Client(base_url=config.prometheus_url, timeout=10),
+        timeout_seconds=config.verify_timeout_seconds,
+    )
     return Pipeline(
         Planner(llm, audit),
         InputBuilder(reader, actions, mode=config.mode),
         OpaHttpGate(httpx.Client(base_url=config.opa_url, timeout=5)),
-        Executor(actor, reader, actions, audit, dry_run=True),
+        Executor(actor, reader, actions, audit, dry_run=not live),
         manager,
         audit,
+        live=live,
+        verifier=verifier,
+        approvals=approvals,
+        notifier=build_notifier(config),
+        public_url=config.public_url,
     )
 
 

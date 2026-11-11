@@ -112,6 +112,93 @@ def test_metrics_report_alert_outcomes_and_incident_states(manager: IncidentMana
     assert 'heimdall_incidents{state="resolved"} 0.0' in text
 
 
+# ---------------------------------------------------------------- approvals
+
+
+def approval_client(manager: IncidentManager, tmp_path: Path):
+    from heimdall.core.approvals import ApprovalStore
+    from heimdall.core.models import ActionProposal
+
+    store = ApprovalStore(connect(tmp_path / "db.sqlite"), b"0123456789abcdef0123456789abcdef")
+    decided: list[tuple[str, bool]] = []
+    app = create_app(
+        alert_token=TOKEN, manager=manager, confirmer=StaticConfirmer(True), approvals=store,
+        on_decision=lambda approval, approved: decided.append((approval.id, approved)),
+    )  # fmt: skip
+    proposal = ActionProposal(type="scale_deployment", namespace="boutique", name="redis-cart",
+                              replicas=1, justification="j", expected_effect="e")  # fmt: skip
+    approval = store.request("inc_1", proposal, "100")
+    return TestClient(app), store, approval, decided
+
+
+def test_approval_page_shows_the_exact_action_and_changes_nothing(
+    manager: IncidentManager, tmp_path: Path
+) -> None:
+    http, store, approval, decided = approval_client(manager, tmp_path)
+
+    response = http.get(f"/approvals/{approval.id}", params={"token": store.token(approval)})
+
+    assert response.status_code == 200
+    assert response.json()["action"]["name"] == "redis-cart"
+    assert response.json()["action"]["replicas"] == 1
+    assert response.json()["status"] == "pending"
+    assert decided == []
+
+
+def test_approving_takes_a_post_with_the_token(manager: IncidentManager, tmp_path: Path) -> None:
+    http, store, approval, decided = approval_client(manager, tmp_path)
+
+    response = http.post(
+        f"/approvals/{approval.id}", json={"token": store.token(approval), "decision": "approve"}
+    )
+
+    assert response.json() == {"status": "approved"}
+    assert decided == [(approval.id, True)]
+    again = http.post(
+        f"/approvals/{approval.id}", json={"token": store.token(approval), "decision": "approve"}
+    )
+    assert again.status_code == 403
+
+
+def test_rejecting_is_reported_as_such(manager: IncidentManager, tmp_path: Path) -> None:
+    http, store, approval, decided = approval_client(manager, tmp_path)
+
+    http.post(
+        f"/approvals/{approval.id}", json={"token": store.token(approval), "decision": "reject"}
+    )
+
+    assert decided == [(approval.id, False)]
+
+
+@pytest.mark.parametrize("token", ["", "wrong", "0" * 64])
+def test_approval_endpoints_refuse_a_wrong_token(
+    manager: IncidentManager, tmp_path: Path, token: str
+) -> None:
+    http, _, approval, decided = approval_client(manager, tmp_path)
+
+    assert http.get(f"/approvals/{approval.id}", params={"token": token}).status_code == 403
+    response = http.post(f"/approvals/{approval.id}", json={"token": token, "decision": "approve"})
+    assert response.status_code == 403
+    assert decided == []
+
+
+def test_the_alert_token_is_not_an_approval_token(manager: IncidentManager, tmp_path: Path) -> None:
+    """Alertmanager's credential must not be able to approve actions."""
+    http, _, approval, decided = approval_client(manager, tmp_path)
+
+    response = http.post(
+        f"/approvals/{approval.id}",
+        json={"token": TOKEN, "decision": "approve"},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 403 and decided == []
+
+
+def test_no_approval_endpoints_without_an_approval_store(manager: IncidentManager) -> None:
+    assert client(manager).get("/approvals/abc").status_code == 404
+
+
 # ---------------------------------------------------------------- confirmer
 
 
