@@ -11,8 +11,8 @@ The full design is in [heimdall-spec-v2.md](heimdall-spec-v2.md).
 ## How it works
 
 An alert becomes an action only after passing several independent checks. The
-model proposes; it never acts directly. (This is the target design. See
-[Status](#status) for what is built.)
+model proposes; it never acts directly. Every stage in the picture is built
+and unit-tested; see [Status](#status) for what has also run on the cluster.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/pipeline-dark.png">
@@ -36,11 +36,20 @@ choices that differ from it are recorded in [docs/decisions.md](docs/decisions.m
 | Milestone | State |
 |---|---|
 | M1 Environment | done |
-| M2 Chaos suite | 15 of 16 scenarios written; see the table below for which are verified |
+| M2 Chaos suite | all 16 scenarios written; see the table below for which are verified |
 | M3 Ingest, incidents, audit | done, running in the cluster |
 | M4 Investigator | works end to end with a local model; accuracy not yet tuned or measured at scale |
-| M5 Planner, policy gate, dry run | built and unit-tested end to end against the real policy engine and a fake Kubernetes API; **not yet run on the cluster** |
-| M6 – M11 | not started |
+| M5 Planner, policy gate, dry run | built and tested against the real policy engine and a fake Kubernetes API; **not yet run on the cluster** |
+| M6 Live execution, GitOps, verification, undo, approvals | built and tested the same way; **not yet run on the cluster** |
+| M7 Postmortems and past-incident search | built; reports come from the audit log only |
+| M8 Benchmark | not started (needs the cluster and many model runs) |
+| M9 Injection suite and threat model | i01 to i10 written and passing without a cluster; the two cluster-only checks are part of `make test-integration` |
+| M10 – M11 | not started |
+
+This is a first prototype: the whole path from alert to postmortem exists in
+code and is covered by 399 unit, property and injection tests plus 36 policy
+rule tests. What is missing is time on the cluster. Nothing after M4 has run
+there yet, so expect bugs at the seams when it does.
 
 ### What works today
 
@@ -55,9 +64,11 @@ damaged cluster to the baseline in seconds.
 can only read, the other can only patch Deployments in one namespace. A
 ValidatingAdmissionPolicy then limits what such a patch may contain: restart,
 scale between 1 and 5, adjust resources within bounds, or switch to an image
-that was already deployed from git. `make test-integration` proves it with 38
+that was already deployed from git. `make test-integration` proves it with
 server-side dry-run cases (env, command, probes, volumes, privileges, labels
-and unknown images are all rejected by the API server itself).
+and unknown images are all rejected by the API server itself). 38 cases have
+passed on the cluster; 7 newer ones, for the Argo CD Application, have been
+written but not run.
 
 **Alert ingest.** Alertmanager posts to Heimdall with a bearer token; a
 NetworkPolicy lets only Alertmanager and Prometheus connect. Every alert is
@@ -80,7 +91,9 @@ tool call's output; otherwise it is rejected and, if the model cannot repair
 it, the incident is escalated as unknown.
 
 The model runs locally through Ollama (`qwen3:8b` on a laptop GPU), with no
-cloud dependency. An API provider is not implemented yet.
+cloud dependency. Claude through the Anthropic API is the second provider
+(`HEIMDALL_LLM_PROVIDER=anthropic`); it is tested against a fake client only,
+because no API key has been used with it yet.
 
 **Planning, policy and dry run.** After a diagnosis, the planner lets the
 model choose actions, but only action types that can fix the diagnosed kind
@@ -100,9 +113,54 @@ between the policy check and the write is refused by the server. The same
 action is never applied twice, and `heimdall freeze` stops all actions at
 once, with no restart.
 
-This path is tested with the real policy engine and a fake Kubernetes API. It
-has not been run on the cluster yet, and there is no live mode: Heimdall
-still changes nothing.
+**Live execution, verification and undo.** In `live` mode an allowed action
+is applied for real. Heimdall then checks recovery itself, with PromQL and
+pod readiness rather than alert state, for up to five minutes. A fix that
+does not help is undone through the same restricted identity (previous
+image, replicas or limits, saved before the write), and the incident goes to
+a human. At most three writes per incident, never the same one twice.
+
+**GitOps.** A rollback or a resource change makes the cluster differ from
+git on purpose. Before such a write Heimdall pauses Argo CD's automatic
+sync, so an unrelated commit cannot put the broken state back; without the
+pause there is no write. It then opens a pull request that reverts the
+offending commit. The incident is `mitigated` until a human merges it;
+Heimdall notices the merge, resumes sync and marks it `resolved`. Heimdall
+never merges.
+
+**Human approval.** Actions the policy will not allow on its own (scaling
+Redis, for example) are sent to a chat webhook with a link. The token in the
+link is an HMAC over the exact action and the version of the object it was
+computed for, works once, and expires after 15 minutes. Opening the link
+only shows the request; deciding takes a POST. After approval the policy
+runs again on fresh state, and if the target has changed the approval is
+void.
+
+**Postmortems.** When an incident closes, a report is built from the audit
+log and nothing else: timeline with the audit sequence number of every
+line, root causes, quoted evidence, ruled-out hypotheses, each action with
+its policy decision, the API server's answer and the verification result,
+drift and pull request, and what the agent cost. No model writes any of it.
+`heimdall incident postmortem <id>` prints Markdown or HTML.
+
+**Past incidents.** The investigator can search earlier reports (BM25). A
+past incident is a hint, never proof: evidence that cites the search is
+rejected. For the benchmark, a run never sees reports about its own
+scenario, and hold-out reports are never searchable.
+
+**Revision tracker.** Heimdall measures how long each revision of a
+Deployment was actually healthy, so the policy can refuse a rollback to a
+revision that never worked.
+
+**Prompt injection.** `tests/injection/` plants hostile content (a log line
+ordering everything scaled to zero, an event asking to delete the namespace,
+a commit message approving itself, a forged alert, secrets printed to
+stdout, and more) and then assumes the model obeys it. Each test passes only
+if a layer below the model stops the harm. Results are in
+[docs/threat-model.md](docs/threat-model.md).
+
+All of this is tested with the real policy engine and fakes for Kubernetes
+and Gitea. None of it has run on the cluster yet.
 
 **Chaos suite.** Each scenario is a YAML file: how to inject the fault, which
 alerts must fire, the true root cause and the acceptable fixes. Parameters
@@ -126,6 +184,7 @@ diagnosis without any model involved, then resets.
 | s12 | Nothing wrong; a badly written rule flaps | `LatencyBudgetBurn` | rule fixed after a syntax error, not re-run |
 | s13 | A worker node stops responding | `NodeNotReady` | not run yet |
 | s14 | Harmless commit two minutes before Redis is scaled to zero | `HighErrorRate` frontend | not run yet |
+| s15 | The bad release of s04, plus a wrong fix forced by the harness | `HighErrorRate` frontend | replayed without a cluster (the restart is undone and escalated); not run yet |
 | s16 | Redis is slow, not down | `HighLatencyP95` cartservice | not run yet |
 
 "Verified" means one run in which the expected alert fired and the cluster
@@ -141,10 +200,13 @@ with 7 tool calls. That is one run, not an accuracy figure.
 - The diagnosis accuracy target for M4 (8 of 10 on four scenarios) has not
   been measured. Running every scenario with a local model on the GPU is
   heavy for a laptop; it needs to be done in small batches.
-- Dry-run mode has only been exercised in unit tests, not on the cluster.
-- Pull requests, human approval, verification and rollback (M6) are not
-  built. An action that needs approval is recorded and the incident escalated.
-- s15 (a forced bad fix that must be rolled back) needs M6.
+- Dry-run and live mode have only been exercised in unit tests, not on the
+  cluster. [NEXT_STEPS.md](NEXT_STEPS.md) lists what to check there, lightest
+  first.
+- The benchmark (M8) does not exist: no accuracy, safety or cost numbers.
+- Postmortems contain no model-written summary; follow-ups are derived from
+  the record ([why](docs/decisions.md)).
+- The Anthropic provider has never talked to the real API.
 - The hold-out scenarios are deliberately not written by the author
   ([why](docs/decisions.md)).
 - `HighLatencyP95` uses one threshold for every service.
@@ -164,6 +226,11 @@ make test              # unit tests and policy tests
 make test-integration  # RBAC and admission policy checks against the cluster
 make reset             # return the cluster to the baseline state
 make down              # delete the cluster
+
+uv run heimdall incident list                     # what Heimdall has seen
+uv run heimdall incident postmortem <id> --html --out report.html
+uv run heimdall audit verify                      # check the audit chain
+uv run heimdall freeze                            # stop all actions, now
 
 uv run python -m chaos.run s05 --seed 1 --agent   # inject one fault and grade the diagnosis
 uv run python -m chaos.suite --runs 3 --agent     # every scenario, three seeds each
