@@ -30,46 +30,93 @@ Everything runs in one kind cluster on a laptop, built by `make up`.
 
 ## Status
 
-Work in progress, built milestone by milestone.
+Built milestone by milestone, following the [spec](heimdall-spec-v2.md). The
+choices that differ from it are recorded in [docs/decisions.md](docs/decisions.md).
 
 | Milestone | State |
 |---|---|
-| M1 Environment | mostly done, see below |
-| M2 – M11 | not started |
+| M1 Environment | done |
+| M2 Chaos suite | 15 of 16 scenarios written; see the table below for which are verified |
+| M3 Ingest, incidents, audit | done, running in the cluster |
+| M4 Investigator | works end to end with a local model; accuracy not yet tuned or measured at scale |
+| M5 Policy gate | OPA policy and its tests written; not yet connected to a planner |
+| M6 – M11 | not started |
 
-M1, verified on a running cluster:
+### What works today
 
-- `make up` builds everything from scratch and is safe to re-run: kind
-  (1 control plane, 2 workers), local registry, Prometheus, Alertmanager,
-  Grafana, Loki, Alloy, Gitea, Linkerd, Argo CD and Online Boutique deployed
-  from the in-cluster GitOps repo.
-- Per-service success rate and latency from the mesh, logs for every service
-  in Loki, 11 alert rules.
-- An alert travels from a broken Deployment to the token-protected ingest
-  endpoint in about 100 seconds. Requests without the token get 401, and a
-  NetworkPolicy lets only Alertmanager connect.
-- `make test-integration` runs 38 server-side dry-run cases against the two
-  Heimdall identities: what RBAC rejects, what the admission policy rejects,
-  and what is allowed.
+**Environment.** `make up` builds everything from nothing: a three-node kind
+cluster, Prometheus, Alertmanager, Grafana, Loki, Alloy, Gitea, Argo CD,
+Linkerd, Chaos Mesh and Online Boutique deployed from the in-cluster GitOps
+repo. It takes about 25 minutes the first time and about 5 afterwards, because
+every image is served from local pull-through caches. `make reset` returns a
+damaged cluster to the baseline in seconds.
 
-- `make reset` returns a damaged cluster to the baseline in seconds, including
-  the GitOps repo.
+**Safety that does not depend on the agent.** Two Kubernetes identities: one
+can only read, the other can only patch Deployments in one namespace. A
+ValidatingAdmissionPolicy then limits what such a patch may contain: restart,
+scale between 1 and 5, adjust resources within bounds, or switch to an image
+that was already deployed from git. `make test-integration` proves it with 38
+server-side dry-run cases (env, command, probes, volumes, privileges, labels
+and unknown images are all rejected by the API server itself).
 
-M1, still to do: mirroring images into the local registry for offline use.
-Measured memory use and timings are in [docs/architecture.md](docs/architecture.md).
+**Alert ingest.** Alertmanager posts to Heimdall with a bearer token; a
+NetworkPolicy lets only Alertmanager and Prometheus connect. Every alert is
+then confirmed against Prometheus, so a forged payload cannot invent an
+incident even with a valid token. Related alerts are grouped into one incident
+using the service dependency graph (a Redis outage is one incident, not three).
+
+**Audit log.** Every alert, state change, tool call, model reply and diagnosis
+is a row in a hash-chained log. Signed checkpoints are committed to a separate
+git repository, so a log that was edited and re-hashed, or truncated, no
+longer matches what was published. `heimdall audit verify` checks both.
+
+**Investigator.** A hand-written loop gives the model read-only tools
+(pods, events, logs, deployments, rollout diffs, nodes, PromQL, LogQL, git
+history, service dependencies). Tool output is redacted for secrets, cleaned,
+truncated and wrapped as untrusted data. Free-form PromQL and LogQL are parsed
+and rejected unless confined to the allowed namespace. A diagnosis is accepted
+only if every piece of evidence quotes text that really appears in the cited
+tool call's output; otherwise it is rejected and, if the model cannot repair
+it, the incident is escalated as unknown.
+
+The model runs locally through Ollama (`qwen3:8b` on a laptop GPU), with no
+cloud dependency. An API provider is not implemented yet.
+
+**Chaos suite.** Each scenario is a YAML file: how to inject the fault, which
+alerts must fire, the true root cause and the acceptable fixes. Parameters
+(target service, magnitude, timing) are sampled from a seed. The runner
+injects, waits for the alerts, optionally waits for Heimdall and grades its
+diagnosis without any model involved, then resets.
+
+SCENARIO_TABLE
+
+### Known gaps
+
+- The diagnosis accuracy target for M4 (8 of 10 on four scenarios) has not
+  been measured yet; the numbers above are single runs.
+- s15 (a forced bad fix that must be rolled back) needs the executor from M6.
+- The hold-out scenarios are deliberately not written by the author
+  ([why](docs/decisions.md)).
+- `HighLatencyP95` uses one threshold for every service.
 
 ## Quickstart
 
 Requirements: Linux, Docker, [kind](https://kind.sigs.k8s.io/), kubectl,
 [uv](https://docs.astral.sh/uv/), 16 GB RAM (32 GB recommended), 4 cores,
 40 GB free disk. Helm and OPA are downloaded into `.bin/` at pinned versions.
+For the investigator, [Ollama](https://ollama.com) with `qwen3:8b` pulled;
+without it Heimdall still groups alerts into incidents but does not
+investigate.
 
 ```sh
 make up                # create the cluster and install everything (about 25 min the first time)
-make test              # unit tests
+make test              # unit tests and policy tests
 make test-integration  # RBAC and admission policy checks against the cluster
 make reset             # return the cluster to the baseline state
 make down              # delete the cluster
+
+uv run python -m chaos.run s05 --seed 1 --agent   # inject one fault and grade the diagnosis
+uv run python -m chaos.suite --runs 3 --agent     # every scenario, three seeds each
 ```
 
 Every tool, image and chart version is pinned in
