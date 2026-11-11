@@ -8,6 +8,7 @@ evidence checks out against the real tool output.
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -95,6 +96,15 @@ def unknown(incident_id: str, reason: str) -> Diagnosis:
         incident_id=incident_id,
         root_causes=[RootCause(category=RootCauseCategory.UNKNOWN, summary=reason, confidence=0.0)],
     )
+
+
+_NOT_NAME = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _name(label: str) -> str:
+    """A label value as it may appear in the prompt outside a data block:
+    only the characters a Kubernetes name can have, so it cannot carry text."""
+    return _NOT_NAME.sub("?", label)[:63]
 
 
 class Investigator:
@@ -205,7 +215,7 @@ class Investigator:
         opening = [
             f"Incident {incident.id}",
             f"Namespace: {incident.namespace or '(none: node-level alert)'}",
-            f"Services with alerts: {', '.join(incident.services) or '(none)'}",
+            f"Services with alerts: {', '.join(map(_name, incident.services)) or '(none)'}",
             "Alerts:",
             *(f"- {json.dumps(a, sort_keys=True)}" for a in alerts),
             "",

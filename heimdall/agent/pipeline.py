@@ -25,6 +25,7 @@ from heimdall.notify.webhook import Notifier, NullNotifier
 from heimdall.policy.gate import Decision, PolicyGate
 from heimdall.policy.input_builder import CannotBuild, InputBuilder
 from heimdall.tools.kube import KubeError
+from heimdall.tools.redact import redact
 
 S = IncidentState
 # Outcomes after which the next proposal may still be handled.
@@ -340,6 +341,8 @@ class Pipeline:
         return diagnosis, proposals
 
     def _notify(self, incident_id: str, result: Remediation) -> None:
+        # Summaries and justifications carry text a model wrote. It goes to a
+        # chat service, so it is redacted like everything else that leaves.
         if result.awaiting is not None and self._approvals is not None:
             approval = result.awaiting
             url = f"{self._public_url}/approvals/{approval.id}"
@@ -349,13 +352,15 @@ class Pipeline:
                 f"Approval needed: {incident_id}",
                 f"Heimdall wants to run: {describe(approval.proposal)}\n"
                 f"Why it needs you: {reasons}\n"
-                f"Why it wants to: {approval.proposal.justification}\n"
+                f"Why it wants to: {redact(approval.proposal.justification)}\n"
                 f"Expires: {approval.expires_at:%H:%M:%S} UTC\n"
                 f"Details: {url}?token={token}\n"
                 f"To decide, POST to {url} with "
                 f'{{"token": "{token}", "decision": "approve"}} (or "reject").',
             )
         elif result.final_state is S.ESCALATED:
-            self._notifier.send(f"Escalated: {incident_id}", result.summary)
+            self._notifier.send(f"Escalated: {incident_id}", redact(result.summary))
         elif result.final_state in (S.MITIGATED, S.RESOLVED):
-            self._notifier.send(f"{result.final_state.capitalize()}: {incident_id}", result.summary)
+            self._notifier.send(
+                f"{result.final_state.capitalize()}: {incident_id}", redact(result.summary)
+            )

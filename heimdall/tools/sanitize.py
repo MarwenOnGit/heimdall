@@ -38,6 +38,8 @@ _INSTRUCTION = re.compile(
     | \b(?:approve|execute|run)\b.{0,40}
       \b(?:automatically|immediately|without\s+(?:approval|asking))\b
     | \bthe\s+(?:fix|solution|root\s+cause)\s+is\s+to\b
+    | \b(?:print|reveal|show|dump|output|send|leak)\b.{0,40}
+      \b(?:environment\s+variables?|env\s+vars?|secrets?|credentials?|system\s+prompt)\b
     | </?(?:system|instructions?|tool_result|untrusted)[^>]*>
     """
 )
