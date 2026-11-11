@@ -23,3 +23,4 @@ bench/results/*.json
 
 # superseded spec, kept locally only
 heimdall_v1.md
+bench/results-*/

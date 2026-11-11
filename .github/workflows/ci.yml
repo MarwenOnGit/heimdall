@@ -14,6 +14,8 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked
+      # opa is needed by the policy gate tests.
+      - run: infra/tools.sh
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
