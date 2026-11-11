@@ -122,3 +122,20 @@ def test_audit_verify_without_anchors_checks_the_chain_only(
 ) -> None:
     assert cli.main(["audit", "verify", "--db", str(audited["db"])]) == 0
     assert "chain only" in capsys.readouterr().out
+
+
+def test_freeze_and_unfreeze_flip_the_flag_and_are_audited(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from heimdall.core.actions import ActionStore
+
+    db = tmp_path / "db.sqlite"
+
+    assert cli.main(["freeze", "--db", str(db)]) == 0
+    assert ActionStore(connect(db)).frozen()
+    assert cli.main(["unfreeze", "--db", str(db)]) == 0
+    assert not ActionStore(connect(db)).frozen()
+
+    events = [(e.event_type, e.payload["frozen"]) for e in AuditLog(connect(db)).events()]
+    assert events == [("freeze", True), ("freeze", False)]
+    assert "frozen" in capsys.readouterr().out

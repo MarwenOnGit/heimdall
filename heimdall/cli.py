@@ -7,7 +7,8 @@ from pathlib import Path
 
 from heimdall.config import Config
 from heimdall.core import anchor as anchoring
-from heimdall.core.audit import AuditLog
+from heimdall.core.actions import ActionStore
+from heimdall.core.audit import AuditLog, EventType
 from heimdall.core.incidents import IncidentManager
 from heimdall.core.store import connect
 from heimdall.tools.dependencies import DependencyGraph
@@ -97,11 +98,25 @@ def cmd_incident_show(args: argparse.Namespace) -> int:
         print(f"no incident {args.id}")
         return 1
     print(f"{incident.id}  state={incident.state}  services={','.join(incident.services) or '-'}")
+    for action in ActionStore(connect(args.db or Config.from_env().db_path)).for_incident(args.id):
+        target = f" {action.name}" if action.name else ""
+        print(f"  action {action.type}{target}: {action.decision} -> {action.status}")
     for event in log.events(incident.id):
         detail = ", ".join(
             f"{k}={v}" for k, v in event.payload.items() if not isinstance(v, dict | list)
         )
         print(f"  {event.seq:>5}  {event.timestamp[:19]}  {event.event_type:<18} {detail}")
+    return 0
+
+
+def cmd_freeze(args: argparse.Namespace) -> int:
+    """The kill switch. It is read before every action, so it takes effect
+    immediately, with no restart."""
+    config = Config.from_env()
+    conn = connect(args.db or config.db_path)
+    ActionStore(conn).set_frozen(args.frozen)
+    AuditLog(conn).append(EventType.FREEZE, {"frozen": args.frozen}, actor="operator")
+    print("frozen: Heimdall will take no actions" if args.frozen else "unfrozen")
     return 0
 
 
@@ -149,6 +164,11 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--gitea", action="store_true", help="read anchors from the Gitea repo")
     verify.add_argument("--public-key", type=Path, help="PEM file; default: derived from the key")
     verify.set_defaults(func=cmd_audit_verify)
+
+    for name, frozen in (("freeze", True), ("unfreeze", False)):
+        switch = commands.add_parser(name, help="stop or resume all actions")
+        switch.add_argument("--db", type=Path)
+        switch.set_defaults(func=cmd_freeze, frozen=frozen)
 
     incident = commands.add_parser("incident").add_subparsers(required=True)
     listing = incident.add_parser("list")

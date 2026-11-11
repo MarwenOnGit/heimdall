@@ -6,11 +6,12 @@ from dataclasses import dataclass
 import httpx
 from fastapi import FastAPI
 
-from heimdall.agent.setup import build_investigator, build_llm
+from heimdall.agent.setup import build_investigator, build_llm, build_pipeline
 from heimdall.agent.worker import Worker
 from heimdall.api import create_app
 from heimdall.config import Config
 from heimdall.core import anchor as anchoring
+from heimdall.core.actions import ActionStore
 from heimdall.core.audit import AuditLog
 from heimdall.core.confirm import PrometheusConfirmer
 from heimdall.core.incidents import IncidentManager
@@ -72,5 +73,8 @@ def build(config: Config) -> Heimdall:
     llm = build_llm(config)
     if llm is not None:
         investigator = build_investigator(config, audit, llm)
-        worker = Worker(incidents, investigator, conn, settle_seconds=config.settle_seconds)
+        pipeline = build_pipeline(config, audit, llm, incidents, ActionStore(conn))
+        worker = Worker(
+            incidents, investigator, conn, settle_seconds=config.settle_seconds, pipeline=pipeline
+        )
     return Heimdall(config, conn, audit, incidents, anchorer, gitea_anchors, api, worker)
