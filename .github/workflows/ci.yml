@@ -19,8 +19,16 @@ jobs:
       - run: uv run mypy
       - run: uv run pytest
 
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: infra/tools.sh
+      - run: .bin/opa fmt --fail --list heimdall/policy/policies/
+      - run: .bin/opa test heimdall/policy/policies/
+
   shell:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck -x infra/*.sh infra/*/*.sh
+      - run: shellcheck -x infra/*.sh infra/*/*.sh infra/admission/tests/*.sh deploy/*.sh fault-images/*.sh

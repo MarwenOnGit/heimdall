@@ -6,7 +6,7 @@ help:
 	@echo "make up         create the cluster and install everything (idempotent)"
 	@echo "make reset      return the running cluster to the baseline state"
 	@echo "make down       delete the cluster and the local registry"
-	@echo "make test       unit tests"
+	@echo "make test       unit tests and policy tests"
 	@echo "make test-integration  RBAC and admission checks against the cluster"
 	@echo "make lint       ruff + mypy"
 
@@ -25,13 +25,15 @@ reset:
 down:
 	@infra/teardown.sh
 
-test:
+test: tools
 	uv run pytest
+	.bin/opa test heimdall/policy/policies/
 
 lint:
 	uv run ruff check .
 	uv run ruff format --check .
 	uv run mypy
+	.bin/opa fmt --fail --list heimdall/policy/policies/
 
 .PHONY: test-integration
 test-integration:
