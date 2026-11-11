@@ -99,6 +99,19 @@ def test_health_needs_no_token(manager: IncidentManager) -> None:
     assert client(manager).get("/healthz").status_code == 200
 
 
+def test_metrics_report_alert_outcomes_and_incident_states(manager: IncidentManager) -> None:
+    ok = client(manager)
+    ok.post("/alerts", json=payload(firing()), headers=AUTH)
+    ok.post("/alerts", json=payload(firing()), headers={"Authorization": "Bearer wrong"})
+
+    text = ok.get("/metrics").text
+
+    assert 'heimdall_alerts_total{outcome="confirmed"} 1.0' in text
+    assert "heimdall_ingest_rejected_total 1.0" in text
+    assert 'heimdall_incidents{state="open"} 1.0' in text
+    assert 'heimdall_incidents{state="resolved"} 0.0' in text
+
+
 # ---------------------------------------------------------------- confirmer
 
 
