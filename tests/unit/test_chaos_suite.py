@@ -37,9 +37,11 @@ def test_summarize_counts_per_scenario() -> None:
         "alerts_ok": 2,
         "baseline_restored": 3,
         "median_seconds_to_alert": 80,
+        "graded": 0,
+        "diagnosed_correctly": 0,
     }
     assert rows[1]["ok"] == 0
-    assert "| s01 | 3 | 2 | 2 | 3 | 80 s |" in format_table(rows)
+    assert "| s01 | 3 | 2 | 2 | 3 | 80 s | n/a |" in format_table(rows)
 
 
 def test_load_results_keeps_latest_per_scenario_and_seed(tmp_path: Path) -> None:

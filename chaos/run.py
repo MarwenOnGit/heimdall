@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from chaos import cluster
+from chaos.grader import grade
 from chaos.model import GitCommit, Kubectl, Manifest, PauseNode, Scenario, Step, Wait, load_all
 from chaos.params import sample
 
@@ -81,7 +82,34 @@ def wait_for_alerts(
     return fired, seen
 
 
-def run(scenario: Scenario, seed: int, keep: bool) -> dict[str, Any]:
+FINISHED_STATES = {"diagnosed", "escalated", "resolved", "failed", "mitigated", "rolled_back"}
+
+
+def heimdall_incidents() -> list[dict[str, Any]]:
+    raw = cluster.kubectl(
+        "-n", "heimdall", "exec", "deploy/heimdall", "--", "heimdall", "incident", "list", "--json"
+    )
+    incidents: list[dict[str, Any]] = json.loads(raw)
+    return incidents
+
+
+def wait_for_agent(since: datetime, timeout: float) -> list[dict[str, Any]]:
+    """Wait until every incident Heimdall opened since `since` is finished.
+
+    The fault stays injected meanwhile, so the agent investigates the real
+    thing. Returns those incidents with their diagnoses.
+    """
+    deadline = time.monotonic() + timeout
+    mine: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        mine = [i for i in heimdall_incidents() if datetime.fromisoformat(i["opened_at"]) >= since]
+        if mine and all(i["state"] in FINISHED_STATES for i in mine):
+            break
+        time.sleep(10)
+    return mine
+
+
+def run(scenario: Scenario, seed: int, keep: bool, agent: bool = False) -> dict[str, Any]:
     params = sample(scenario.parameters, seed)
     rendered = scenario.render(params)
     result: dict[str, Any] = {
@@ -100,7 +128,8 @@ def run(scenario: Scenario, seed: int, keep: bool) -> dict[str, Any]:
         return result
 
     time.sleep(params["offset_seconds"])
-    result["injected_at"] = datetime.now(UTC).isoformat()
+    injected_at = datetime.now(UTC)
+    result["injected_at"] = injected_at.isoformat()
     try:
         result["steps"] = [apply_step(step) for step in rendered.inject]
         log("injected, waiting for alerts")
@@ -112,6 +141,24 @@ def run(scenario: Scenario, seed: int, keep: bool) -> dict[str, Any]:
         result["alerts_other"] = sorted(f"{a}/{s}" for a, s in seen - expected)
         result["alerts_ok"] = len(fired) == len(expected)
         log(f"alerts ok={result['alerts_ok']} fired={fired} other={result['alerts_other']}")
+
+        if agent:
+            log("waiting for Heimdall to finish investigating")
+            incidents = wait_for_agent(injected_at, timeout=900)
+            # Several incidents for one fault means correlation split it up;
+            # their root causes are graded together.
+            causes = [
+                cause
+                for i in incidents
+                for cause in ((i.get("result") or {}).get("diagnosis") or {}).get("root_causes", [])
+            ]
+            result["incidents"] = incidents
+            result["grade"] = grade(result["ground_truth"], {"root_causes": causes})
+            result["grade"]["incidents"] = len(incidents)
+            result["grade"]["finished"] = bool(incidents) and all(
+                i["state"] in FINISHED_STATES for i in incidents
+            )
+            log(f"grade: {result['grade']}")
     finally:
         if not keep:
             cluster.reset()
@@ -130,10 +177,11 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--set", dest="scenario_set", default="dev", choices=["dev", "holdout"])
     parser.add_argument("--keep", action="store_true", help="leave the fault in place")
+    parser.add_argument("--agent", action="store_true", help="wait for and grade Heimdall")
     args = parser.parse_args()
 
     scenario = find_scenario(args.scenario, args.scenario_set)
-    result = run(scenario, args.seed, args.keep)
+    result = run(scenario, args.seed, args.keep, args.agent)
 
     RESULTS.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")

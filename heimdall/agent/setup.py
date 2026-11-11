@@ -32,7 +32,11 @@ def build_llm(config: Config) -> LLM | None:
     if config.llm_provider == "off":
         return None
     if config.llm_provider == "ollama":
-        client = httpx.Client(base_url=config.ollama_url, timeout=600)
+        # Ollama only answers requests addressed to localhost. When it is
+        # reached through the cluster bridge, the Host header must say so.
+        client = httpx.Client(
+            base_url=config.ollama_url, timeout=600, headers={"Host": "localhost"}
+        )
         return OllamaLLM(config.llm_model, client, context_tokens=config.llm_context_tokens)
     raise ValueError(f"unknown LLM provider {config.llm_provider!r}")
 

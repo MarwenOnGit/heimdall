@@ -1,6 +1,7 @@
 """Command line: `heimdall serve`, `heimdall audit verify`, `heimdall incident ...`."""
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -69,7 +70,16 @@ def _manager(args: argparse.Namespace) -> tuple[IncidentManager, AuditLog]:
 
 
 def cmd_incident_list(args: argparse.Namespace) -> int:
-    manager, _ = _manager(args)
+    manager, log = _manager(args)
+    if args.json:
+        out = []
+        for incident in manager.all():
+            diagnoses = [e.payload for e in log.events(incident.id) if e.event_type == "diagnosis"]
+            out.append(
+                {**incident.model_dump(mode="json"), "result": diagnoses[-1] if diagnoses else None}
+            )
+        print(json.dumps(out))
+        return 0
     for incident in manager.all():
         flags = " flapping" if incident.flapping else ""
         print(
@@ -143,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     incident = commands.add_parser("incident").add_subparsers(required=True)
     listing = incident.add_parser("list")
     listing.add_argument("--db", type=Path)
+    listing.add_argument("--json", action="store_true", help="include each diagnosis")
     listing.set_defaults(func=cmd_incident_list)
     show = incident.add_parser("show")
     show.add_argument("id")
