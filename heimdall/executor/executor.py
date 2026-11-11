@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from heimdall.core.actions import RAN, ActionStatus, ActionStore
+from heimdall.core.actions import RAN, ActionRecord, ActionStatus, ActionStore
 from heimdall.core.audit import AuditLog, EventType
 from heimdall.core.models import ActionProposal, ActionType
 from heimdall.executor.gitops import GitOps, GitOpsError
@@ -83,7 +83,7 @@ class Executor:
                 # A restart must never apply the same action twice.
                 return Outcome(earlier.status, earlier.detail, earlier.previous)
             with self._lock(proposal):
-                outcome = self._write(proposal, resource_version)
+                outcome = self._write(incident_id, proposal, decision, resource_version)
 
         self._actions.record(
             incident_id, proposal, decision=decision.decision, status=outcome.status,
@@ -125,7 +125,13 @@ class Executor:
 
     # -------------------------------------------------------------- writes
 
-    def _write(self, proposal: ActionProposal, resource_version: str | None) -> Outcome:
+    def _write(
+        self,
+        incident_id: str,
+        proposal: ActionProposal,
+        decision: Decision,
+        resource_version: str | None,
+    ) -> Outcome:
         base = f"/apis/apps/v1/namespaces/{proposal.namespace}/deployments/{proposal.name}"
         try:
             previous = self._snapshot(base)
@@ -144,6 +150,13 @@ class Executor:
             # Makes the write conditional: the API server answers 409 if the
             # object changed since the policy gate read it.
             body.setdefault("metadata", {})["resourceVersion"] = resource_version
+        if not self._dry_run:
+            # Write-ahead: the intent and the state to go back to are stored
+            # before the request leaves, so a crash right after it is not lost.
+            self._actions.record(
+                incident_id, proposal, decision=decision.decision, status=ActionStatus.PENDING,
+                detail="write sent; outcome not recorded", previous=previous,
+            )  # fmt: skip
         try:
             self._actor.patch(path, body, patch_type=patch_type, dry_run=self._dry_run)
         except KubeError as e:
@@ -173,6 +186,21 @@ class Executor:
             ],
         }
 
+    # ------------------------------------------------------------- restart
+
+    def record_of(self, incident_id: str, proposal: ActionProposal) -> ActionRecord | None:
+        return self._actions.find(incident_id, proposal)
+
+    def confirm(self, incident_id: str, proposal: ActionProposal) -> None:
+        """Mark a write whose outcome was lost in a crash as applied, once it
+        has been verified."""
+        record = self._actions.find(incident_id, proposal)
+        if record is not None and record.status is ActionStatus.PENDING:
+            self._actions.record(
+                incident_id, proposal, decision=record.decision, status=ActionStatus.EXECUTED,
+                detail="applied; confirmed by verification after a restart",
+            )  # fmt: skip
+
     # ---------------------------------------------------------------- undo
 
     def undo(self, incident_id: str, proposal: ActionProposal) -> Outcome:
@@ -183,7 +211,9 @@ class Executor:
         object changed precisely because of the action being undone.
         """
         record = self._actions.find(incident_id, proposal)
-        if record is None or record.status is not ActionStatus.EXECUTED:
+        # PENDING: a write that was sent but whose outcome was lost in a crash.
+        # Restoring the previous state is right whether or not it landed.
+        if record is None or record.status not in (ActionStatus.EXECUTED, ActionStatus.PENDING):
             return Outcome(ActionStatus.FAILED, "there is no executed action to undo")
         if proposal.type is ActionType.RESTART_DEPLOYMENT:
             outcome = Outcome(ActionStatus.UNDONE, "a restart leaves nothing to undo")

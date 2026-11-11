@@ -29,6 +29,10 @@ CLUSTER_WRITES = frozenset(
 
 
 class ActionStatus(StrEnum):
+    # Written just before a live write is sent. If Heimdall dies before the
+    # outcome is recorded, this is how the next start knows a write may have
+    # happened, and what the target looked like before it.
+    PENDING = "pending"
     DRY_RUN = "dry_run"  # accepted by the API server in dry-run mode
     EXECUTED = "executed"
     RECORDED = "recorded"  # nothing to run: escalate, none, or a PR that was only described

@@ -111,6 +111,12 @@ class Worker:
         return None
 
     def _loop(self) -> None:
+        if self._pipeline is not None:
+            try:
+                # First of all, finish what a restart interrupted.
+                self._pipeline.recover()
+            except Exception:
+                log.exception("recovery after restart failed")
         while not self._stop.is_set():
             try:
                 if self._pipeline is not None:

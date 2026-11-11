@@ -270,6 +270,96 @@ class Pipeline:
         # Dry runs change nothing, and escalations and pull requests need a person.
         return S.ESCALATED, summary
 
+    # ---------------------------------------------------------- restart
+
+    def recover(self) -> list[str]:
+        """Bring incidents that a restart interrupted to a safe end.
+
+        Called once at startup. Nothing is ever applied again and the plan is
+        never resumed: a human gets the incident. The one thing recovery does
+        do is finish the safety step that was cut short. If a write was sent
+        (or may have been) and was not verified, it is verified now, and
+        undone if the service has not recovered. Returns the incidents handled.
+        """
+        handled = []
+        interrupted = (S.DIAGNOSED, S.PLANNING, S.EXECUTING, S.VERIFYING, S.ROLLED_BACK)
+        for incident in self._manager.all(active_only=True):
+            if incident.state not in interrupted:
+                continue
+            self._recover(incident.id, incident.state)
+            handled.append(incident.id)
+        return handled
+
+    def _recover(self, incident_id: str, state: IncidentState) -> None:
+        _, proposals = self._recall(incident_id)
+        records = [(p, self._executor.record_of(incident_id, p)) for p in proposals]
+        unverified = [
+            p
+            for p, record in records
+            if record is not None
+            and p.type in CLUSTER_WRITES
+            and (
+                record.status is ActionStatus.PENDING
+                or (record.status is ActionStatus.EXECUTED and state is S.VERIFYING)
+            )
+        ]
+        result = Remediation()
+        if not unverified or self._verifier is None:
+            drift_open = any(
+                record is not None
+                and p.type in DRIFT_CREATING
+                and record.status in (ActionStatus.EXECUTED, ActionStatus.PENDING)
+                for p, record in records
+            )
+            if not drift_open and any(p.type in DRIFT_CREATING for p in proposals):
+                # Sync may have been paused for a write that was never sent.
+                self._resume_sync(incident_id)
+            self._finish(
+                incident_id, result, S.ESCALATED,
+                f"Heimdall restarted while the incident was {state}; no unverified write "
+                "was left behind, and the plan was not resumed",
+            )  # fmt: skip
+            return
+
+        proposal = unverified[-1]
+        if self._manager.get(incident_id).state is S.EXECUTING:
+            self._move(incident_id, S.VERIFYING, f"restart: verifying {describe(proposal)}")
+        verification = self._verifier.verify(
+            recovery_checks(proposal, self._manager.get(incident_id))
+        )
+        self._audit.append(
+            EventType.VERIFICATION,
+            {
+                "action": describe(proposal),
+                "recovered": verification.recovered,
+                "seconds": verification.seconds,
+                "checks": verification.checks,
+                "after_restart": True,
+            },
+            actor="verifier",
+            incident_id=incident_id,
+        )
+        if verification.recovered:
+            self._executor.confirm(incident_id, proposal)
+            summary = (
+                f"Heimdall restarted during {describe(proposal)}. The service is healthy, so "
+                "the change was kept. The rest of the plan was not run"
+            )
+        else:
+            undo = self._executor.undo(incident_id, proposal)
+            if undo.status is ActionStatus.UNDONE and proposal.type in DRIFT_CREATING:
+                self._resume_sync(incident_id)
+            self._move(incident_id, S.ROLLED_BACK, f"restart: {describe(proposal)} did not help")
+            result.rolled_back = True
+            undone = (
+                "undone" if undo.status is ActionStatus.UNDONE else f"UNDO FAILED: {undo.detail}"
+            )
+            summary = (
+                f"Heimdall restarted during {describe(proposal)}. The service did not recover "
+                f"({', '.join(verification.failing)}); {undone}"
+            )
+        self._finish(incident_id, result, S.ESCALATED, summary)
+
     # ------------------------------------------------------------ gitops
 
     def _resume_sync(self, incident_id: str) -> None:
