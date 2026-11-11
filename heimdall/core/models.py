@@ -140,3 +140,29 @@ class Diagnosis(BaseModel):
     def confidence(self) -> float:
         """An incident is only as well understood as its least certain cause."""
         return min(cause.confidence for cause in self.root_causes)
+
+
+class ActionProposal(BaseModel):
+    """One action the planner proposes. Only the executor ever runs it, and
+    only after the policy gate has decided."""
+
+    type: ActionType
+    namespace: str | None = None
+    name: str | None = Field(default=None, description="Deployment name")
+    replicas: int | None = None
+    to_revision: int | None = None
+    container: str | None = None
+    limits: dict[str, str] | None = Field(
+        default=None, description='New limits, e.g. {"memory": "256Mi"}'
+    )
+    summary: str | None = Field(default=None, description="For escalate, none and open_pr")
+    justification: str = Field(description="Why this action fixes the diagnosed cause")
+    expected_effect: str = Field(
+        description="A checkable outcome, e.g. frontend success rate above 99% within 3 minutes"
+    )
+
+    @property
+    def target(self) -> ResourceRef | None:
+        if self.name is None:
+            return None
+        return ResourceRef(kind="Deployment", namespace=self.namespace, name=self.name)
