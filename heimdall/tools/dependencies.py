@@ -3,6 +3,9 @@
 from pathlib import Path
 
 import yaml
+from pydantic import BaseModel, Field
+
+from heimdall.tools.registry import Tool, ToolError
 
 
 class DependencyGraph:
@@ -35,3 +38,32 @@ class DependencyGraph:
     def connected(self, a: str, b: str) -> bool:
         """True when the two services are the same or call each other directly."""
         return a == b or b in self._upstream.get(a, set()) or a in self._upstream.get(b, set())
+
+
+class ServiceArgs(BaseModel):
+    service: str = Field(description="Service name, e.g. cartservice")
+
+
+class DependencyTools:
+    def __init__(self, graph: DependencyGraph) -> None:
+        self._graph = graph
+
+    def get_service_dependencies(self, args: ServiceArgs) -> str:
+        if args.service not in self._graph.services:
+            raise ToolError(
+                f"unknown service {args.service!r}; known: {sorted(self._graph.services)}"
+            )
+        calls = sorted(self._graph.upstream(args.service))
+        called_by = sorted(self._graph.downstream(args.service))
+        return (
+            f"service={args.service}\n"
+            f"depends_on={','.join(calls) or 'nothing'}\n"
+            f"used_by={','.join(called_by) or 'nothing'}"
+        )
+
+    def tools(self) -> list[Tool]:
+        return [
+            Tool("get_service_dependencies", "Show which services a service depends on and "
+                 "which services use it. A failing dependency often shows up as errors in the "
+                 "services that use it.", ServiceArgs, self.get_service_dependencies),
+        ]  # fmt: skip
