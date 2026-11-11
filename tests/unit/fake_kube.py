@@ -72,6 +72,8 @@ class FakeKube:
     # or the admission policy would.
     reject_with: tuple[int, str] | None = None
     patches: list[dict[str, Any]] = field(default_factory=list)
+    # Set to True to also accept patches to the Argo CD Application.
+    applications: bool = False
 
     def add(self, name: str, **kwargs: Any) -> None:
         self.deployments[name] = deployment(name, **kwargs)
@@ -87,6 +89,13 @@ class FakeKube:
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         parts = request.url.path.strip("/").split("/")
+        if parts[1] == "argoproj.io":
+            if not self.applications or request.method != "PATCH":
+                return httpx.Response(403, json={"message": "forbidden"})
+            self.patches.append({"path": request.url.path, "body": json.loads(request.content),
+                                 "dry_run": request.url.params.get("dryRun") == "All",
+                                 "content_type": request.headers["content-type"]})  # fmt: skip
+            return httpx.Response(200, json={})
         # /apis/apps/v1/namespaces/<ns>/<kind>[/<name>[/scale]]
         namespace, kind = parts[4], parts[5]
         name = parts[6] if len(parts) > 6 else None
