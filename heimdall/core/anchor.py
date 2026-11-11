@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
 
+import httpx
 import rfc8785
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -33,12 +34,16 @@ class Anchor:
 
 
 class AnchorPublisher(Protocol):
+    name: str
+
     def publish(self, anchor: Anchor) -> None: ...
 
 
 class FileAnchorPublisher:
     """Appends anchors to a JSON Lines file. For development and tests; in the
     cluster, anchors go to a separate git repository and to the webhook."""
+
+    name = "file"
 
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -49,8 +54,48 @@ class FileAnchorPublisher:
             f.write(json.dumps(asdict(anchor)) + "\n")
 
 
+def parse_anchors(text: str) -> list[Anchor]:
+    return [Anchor(**json.loads(line)) for line in text.splitlines() if line.strip()]
+
+
 def read_anchor_file(path: Path) -> list[Anchor]:
-    return [Anchor(**json.loads(line)) for line in path.read_text().splitlines() if line.strip()]
+    return parse_anchors(path.read_text())
+
+
+class GiteaAnchorPublisher:
+    """Appends each anchor to a file in a git repository, one commit per
+    anchor. The repository's history is the tamper-evident record: rewriting
+    it would change commit hashes that others have already seen."""
+
+    name = "gitea"
+
+    def __init__(self, client: httpx.Client, repo: str, path: str = "anchors.jsonl") -> None:
+        self._client = client
+        self._url = f"/api/v1/repos/{repo}/contents/{path}"
+
+    def read(self) -> list[Anchor]:
+        response = self._client.get(self._url)
+        if response.status_code == 404:
+            return []
+        response.raise_for_status()
+        return parse_anchors(base64.b64decode(response.json()["content"]).decode())
+
+    def publish(self, anchor: Anchor) -> None:
+        line = json.dumps(asdict(anchor)) + "\n"
+        message = f"Anchor audit log at seq {anchor.seq}"
+        current = self._client.get(self._url)
+        if current.status_code == 404:
+            body = {"content": base64.b64encode(line.encode()).decode(), "message": message}
+            self._client.post(self._url, json=body).raise_for_status()
+            return
+        current.raise_for_status()
+        existing = base64.b64decode(current.json()["content"]).decode()
+        body = {
+            "content": base64.b64encode((existing + line).encode()).decode(),
+            "message": message,
+            "sha": current.json()["sha"],
+        }
+        self._client.put(self._url, json=body).raise_for_status()
 
 
 def generate_key() -> Ed25519PrivateKey:
@@ -124,12 +169,22 @@ class Anchorer:
         if head is None:
             return None
         anchor = sign(head, self._key)
+        published, failed = [], []
         for publisher in self._publishers:
-            publisher.publish(anchor)
+            # One unreachable destination must not stop the others, or the
+            # agent. The failure is recorded in the log itself.
+            try:
+                publisher.publish(anchor)
+                published.append(publisher.name)
+            except Exception:  # noqa: BLE001
+                failed.append(publisher.name)
         self._since_anchor = 0
         self._log.append(
-            EventType.ANCHOR, {"anchored_seq": anchor.seq, "hash": anchor.hash}, actor="heimdall"
-        )
+            EventType.ANCHOR,
+            {"anchored_seq": anchor.seq, "hash": anchor.hash, "published": published,
+             "failed": failed},
+            actor="heimdall",
+        )  # fmt: skip
         return anchor
 
 
