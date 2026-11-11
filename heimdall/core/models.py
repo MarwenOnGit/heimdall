@@ -105,3 +105,38 @@ class Incident(BaseModel):
     flapping: bool = False
     opened_at: datetime
     updated_at: datetime
+
+
+class Evidence(BaseModel):
+    """One observation backing a root cause, tied to the tool output it came from."""
+
+    tool_call_id: str = Field(description="The id of the tool call, e.g. tc_3")
+    quote: str = Field(min_length=3, description="Text copied exactly from that tool call's output")
+    observation: str = Field(description="What the quote shows, in your own words")
+
+
+class RootCause(BaseModel):
+    category: RootCauseCategory
+    affected_resource: ResourceRef | None = Field(
+        default=None, description="The object that must change to fix the problem"
+    )
+    summary: str
+    evidence: list[Evidence] = []
+    confidence: float = Field(ge=0, le=1)
+
+
+class RuledOut(BaseModel):
+    hypothesis: str
+    reason: str
+    tool_call_id: str | None = None
+
+
+class Diagnosis(BaseModel):
+    incident_id: str
+    root_causes: list[RootCause] = Field(min_length=1)
+    ruled_out: list[RuledOut] = []
+
+    @property
+    def confidence(self) -> float:
+        """An incident is only as well understood as its least certain cause."""
+        return min(cause.confidence for cause in self.root_causes)
