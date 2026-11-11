@@ -1,0 +1,36 @@
+id: s05
+description: A commit changes the image of {service} to a tag that does not exist.
+difficulty: easy
+parameters:
+  service:
+    choice: [productcatalogservice, shippingservice, currencyservice, paymentservice, emailservice]
+inject:
+  - type: git_commit
+    message: "Bump {service} to v0.10.8"
+    files:
+      online-boutique/overrides/{service}-image.yaml: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: {service}
+        spec:
+          template:
+            spec:
+              containers:
+                - name: server
+                  image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/{service}:v0.10.8
+    patches:
+      - overrides/{service}-image.yaml
+expected_alerts:
+  - alertname: ImagePullFailing
+    service: "{service}"
+ground_truth:
+  - category: bad_image_reference
+    resource:
+      kind: Deployment
+      namespace: boutique
+      name: "{service}"
+acceptable_fixes: [rollback_deployment, open_pr]
+recovery_condition:
+  - 'kube_deployment_status_replicas_updated{{namespace="boutique", deployment="{service}"}} == 1'
+  - 'kube_deployment_status_replicas_unavailable{{namespace="boutique", deployment="{service}"}} == 0'

@@ -1,0 +1,37 @@
+id: s04
+description: A commit releases a frontend version that fails a share of requests.
+difficulty: medium
+parameters:
+  # Three builds of the same broken release: 20%, 30% and 40% of requests fail.
+  tag:
+    choice: [v0.11.0, v0.11.1, v0.11.2]
+inject:
+  - type: git_commit
+    message: "Release frontend {tag}"
+    files:
+      online-boutique/overrides/frontend-image.yaml: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: frontend
+        spec:
+          template:
+            spec:
+              containers:
+                - name: server
+                  image: localhost:5001/boutique/frontend:{tag}
+    patches:
+      - overrides/frontend-image.yaml
+expected_alerts:
+  - alertname: HighErrorRate
+    service: frontend
+ground_truth:
+  - category: bad_release
+    resource:
+      kind: Deployment
+      namespace: boutique
+      name: frontend
+acceptable_fixes: [rollback_deployment, open_pr]
+recovery_condition:
+  - 'kube_deployment_status_replicas_available{{namespace="boutique", deployment="frontend"}} == 1'
+  - 'heimdall:service_success_rate:ratio_rate2m{{service="frontend"}} >= 0.99'

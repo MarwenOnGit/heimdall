@@ -1,0 +1,38 @@
+id: s08
+description: Something burns CPU inside the adservice container until it is throttled.
+difficulty: medium
+parameters:
+  workers:
+    int_range: [2, 4]
+inject:
+  - type: manifest
+    content: |
+      apiVersion: chaos-mesh.org/v1alpha1
+      kind: StressChaos
+      metadata:
+        name: s08-cpu
+        namespace: boutique
+      spec:
+        mode: all
+        selector:
+          namespaces: [boutique]
+          labelSelectors:
+            app.kubernetes.io/name: adservice
+        containerNames: [server]
+        stressors:
+          cpu:
+            workers: {workers}
+            load: 100
+expected_alerts:
+  - alertname: CPUThrottlingHigh
+    service: adservice
+alert_timeout_seconds: 720
+ground_truth:
+  - category: resource_saturation
+    resource:
+      kind: Deployment
+      namespace: boutique
+      name: adservice
+acceptable_fixes: [scale_deployment]
+recovery_condition:
+  - 'heimdall:service_success_rate:ratio_rate2m{{service="adservice"}} >= 0.99'

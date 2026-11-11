@@ -42,6 +42,9 @@ if [ "$(docker inspect -f '{{json .NetworkSettings.Networks.kind}}' "$REGISTRY_N
   docker network connect kind "$REGISTRY_NAME"
 fi
 
+# Pull-through caches for every upstream registry.
+"$ROOT/infra/registry/caches.sh" up
+
 # Standard discovery ConfigMap for local registries (KEP-1755).
 k apply -f - <<EOF >/dev/null
 apiVersion: v1
@@ -54,6 +57,9 @@ data:
     host: "localhost:${REGISTRY_PORT}"
     help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
 EOF
+
+# --- bad-release images used by the chaos scenarios ------------------------
+"$ROOT/fault-images/build.sh"
 
 # --- namespaces -----------------------------------------------------------
 k apply -f "$ROOT/infra/namespaces.yaml" >/dev/null
@@ -97,26 +103,21 @@ helm_install linkerd-control-plane linkerd linkerd-control-plane "$LINKERD_REPO"
   --set-file identity.issuer.tls.keyPEM="$certs/issuer.key"
 k apply -f "$ROOT/infra/linkerd/podmonitor.yaml" >/dev/null
 
+# --- chaos ----------------------------------------------------------------
+helm_install chaos-mesh chaos-mesh chaos-mesh "$CHAOS_MESH_REPO" "$CHAOS_MESH_VERSION" \
+  -f "$ROOT/infra/helm-values/chaos-mesh.yaml"
+
 # --- GitOps ---------------------------------------------------------------
 helm_install argocd argocd argo-cd "$ARGOCD_REPO" "$ARGOCD_VERSION" \
   -f "$ROOT/infra/helm-values/argocd.yaml"
 "$ROOT/infra/gitea/seed.sh"
 
 # --- workload -------------------------------------------------------------
-# Out-of-band dependency of checkoutservice; deliberately not in git.
-k -n boutique create configmap checkout-settings \
-  --from-literal=settings.yaml='currency_default: USD' \
-  --dry-run=client -o yaml | k apply -f - >/dev/null
+ensure_checkout_settings
 k apply -f "$ROOT/infra/argocd/appproject-boutique.yaml" \
   -f "$ROOT/infra/argocd/application-boutique.yaml" >/dev/null
 log "waiting for Online Boutique to become healthy"
-for _ in $(seq 1 120); do
-  status="$(k -n argocd get application boutique \
-    -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null || true)"
-  [ "$status" = "Synced/Healthy" ] && break
-  sleep 5
-done
-[ "$status" = "Synced/Healthy" ] || die "boutique application is ${status:-unknown}, expected Synced/Healthy"
+wait_boutique_healthy 600 || die "Online Boutique did not become healthy"
 
 # --- alert rules ----------------------------------------------------------
 k apply -f "$ROOT/infra/alert-rules/" >/dev/null
@@ -129,11 +130,21 @@ k -n heimdall create configmap heimdall-allowed-images --from-literal=images="$i
   --dry-run=client -o yaml | k apply -f - >/dev/null
 k apply -f "$ROOT/infra/rbac/" -f "$ROOT/infra/admission/actor-policy.yaml" >/dev/null
 
-# --- temporary alert echo endpoint (replaced by Heimdall in M3) -----------
-k -n heimdall create configmap heimdall-echo --from-file="$ROOT/infra/echo/echo.py" \
-  --dry-run=client -o yaml | k apply -f - >/dev/null
-# shellcheck disable=SC2016  # envsubst wants the literal variable name
-envsubst '${ECHO_IMAGE}' <"$ROOT/infra/echo/echo.yaml" | k apply -f - >/dev/null
+# --- Heimdall -------------------------------------------------------------
+# Key that signs audit log checkpoints. Generated once.
+if ! k -n heimdall get secret heimdall-audit-key >/dev/null 2>&1; then
+  keyfile="$(mktemp)"
+  openssl genpkey -algorithm ed25519 -out "$keyfile"
+  k -n heimdall create secret generic heimdall-audit-key --from-file=audit.key="$keyfile" >/dev/null
+  rm -f "$keyfile"
+fi
+"$ROOT/infra/gitea/bot.sh"
+HEIMDALL_IMAGE="$("$ROOT/deploy/build.sh")"
+HEIMDALL_LLM_PROVIDER="$("$ROOT/infra/ollama-bridge.sh")"
+export HEIMDALL_IMAGE HEIMDALL_LLM_PROVIDER
+# shellcheck disable=SC2016  # envsubst wants the literal variable names
+envsubst '${HEIMDALL_IMAGE} ${HEIMDALL_LLM_PROVIDER}' <"$ROOT/deploy/heimdall.yaml" |
+  k apply -f - >/dev/null
 k -n heimdall rollout status deploy/heimdall --timeout=180s >/dev/null
 
 log "environment ready"

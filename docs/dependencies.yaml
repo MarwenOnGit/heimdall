@@ -1,0 +1,29 @@
+# Which service calls which, in the Online Boutique workload.
+# service: [services it depends on]
+# Heimdall uses this to group related alerts into one incident and to look
+# upstream before blaming the service that alerted.
+loadgenerator: [frontend]
+frontend:
+  - adservice
+  - cartservice
+  - checkoutservice
+  - currencyservice
+  - productcatalogservice
+  - recommendationservice
+  - shippingservice
+checkoutservice:
+  - cartservice
+  - currencyservice
+  - emailservice
+  - paymentservice
+  - productcatalogservice
+  - shippingservice
+recommendationservice: [productcatalogservice]
+cartservice: [redis-cart]
+adservice: []
+currencyservice: []
+emailservice: []
+paymentservice: []
+productcatalogservice: []
+shippingservice: []
+redis-cart: []

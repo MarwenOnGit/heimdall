@@ -88,9 +88,20 @@ spec:
           annotations:
             summary: A container image cannot be pulled.
         - alert: PodPendingConfig
+          # A pod that cannot start: a container with a configuration error,
+          # or a pod stuck Pending (for example on a missing volume). Pods
+          # that are Pending because of an image pull have their own alert.
           expr: |
             max by (namespace, service) (
-              kube_pod_container_status_waiting_reason{namespace="boutique", reason=~"CreateContainerConfigError|ContainerCreating"}
+              (
+                kube_pod_container_status_waiting_reason{namespace="boutique", reason="CreateContainerConfigError"}
+                or on (namespace, pod)
+                (
+                  kube_pod_status_phase{namespace="boutique", phase="Pending"} == 1
+                  unless on (namespace, pod)
+                  kube_pod_container_status_waiting_reason{namespace="boutique", reason=~"ErrImagePull|ImagePullBackOff"} == 1
+                )
+              )
               * on (namespace, pod) group_left (service) heimdall:pod_service:info
             ) == 1
           for: 2m
@@ -142,17 +153,16 @@ spec:
 
     - name: heimdall.infrastructure
       rules:
-        - alert: PVCAlmostFull
+        - alert: VolumeAlmostFull
           expr: |
-            label_replace(
-              kubelet_volume_stats_used_bytes{namespace="boutique"}
-              / kubelet_volume_stats_capacity_bytes{namespace="boutique"} > 0.9,
-              "service", "$1", "persistentvolumeclaim", "(.+)"
-            )
+            max by (namespace, service) (
+              1 - node_filesystem_avail_bytes{namespace="boutique", mountpoint="/data"}
+                / node_filesystem_size_bytes{namespace="boutique", mountpoint="/data"}
+            ) > 0.9
           for: 2m
           labels: {heimdall: "true", severity: warning}
           annotations:
-            summary: A persistent volume is more than 90% full.
+            summary: A data volume is more than 90% full.
         - alert: NodeNotReady
           # Nodes are not namespaced, so this alert has a node label instead
           # of namespace and service.

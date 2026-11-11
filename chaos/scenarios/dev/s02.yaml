@@ -1,0 +1,24 @@
+id: s02
+description: >-
+  The ConfigMap that checkoutservice mounts is deleted. It was created by hand
+  and is not in git, so it cannot be restored from there.
+difficulty: medium
+inject:
+  - type: kubectl
+    args: ["-n", "boutique", "delete", "configmap", "checkout-settings"]
+  # Running pods keep their mounted copy; the problem shows on the next start.
+  - type: kubectl
+    args: ["-n", "boutique", "rollout", "restart", "deploy/checkoutservice"]
+expected_alerts:
+  - alertname: PodPendingConfig
+    service: checkoutservice
+ground_truth:
+  - category: missing_dependency
+    resource:
+      kind: ConfigMap
+      namespace: boutique
+      name: checkout-settings
+acceptable_fixes: [escalate]
+recovery_condition:
+  - 'kube_deployment_status_replicas_updated{{namespace="boutique", deployment="checkoutservice"}} == 1'
+  - 'kube_deployment_status_replicas_unavailable{{namespace="boutique", deployment="checkoutservice"}} == 0'

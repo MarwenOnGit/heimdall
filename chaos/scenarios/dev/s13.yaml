@@ -1,0 +1,17 @@
+id: s13
+description: A worker node stops responding. Every pod on it is affected.
+difficulty: hard
+inject:
+  - type: pause_node
+    node: heimdall-worker2
+expected_alerts:
+  - alertname: NodeNotReady
+ground_truth:
+  - category: node_problem
+    resource:
+      kind: Node
+      name: heimdall-worker2
+# There are no node actions in the catalog.
+acceptable_fixes: [escalate]
+recovery_condition:
+  - 'kube_node_status_condition{{node="heimdall-worker2", condition="Ready", status="true"}} == 1'

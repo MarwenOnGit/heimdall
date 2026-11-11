@@ -1,0 +1,30 @@
+# Alerts about Heimdall itself. They deliberately do NOT carry heimdall="true":
+# a watcher that is down cannot be asked to investigate its own outage, so
+# these go to the human receiver.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: heimdall-self
+  namespace: monitoring
+spec:
+  groups:
+    - name: heimdall.self
+      rules:
+        - alert: HeimdallDown
+          expr: absent(up{namespace="heimdall", service="heimdall"} == 1)
+          for: 2m
+          labels: {severity: critical, audience: human}
+          annotations:
+            summary: Heimdall is not running or cannot be scraped. Alerts are not being handled.
+        - alert: HeimdallIngestRejections
+          expr: increase(heimdall_ingest_rejected_total[10m]) > 5
+          for: 0m
+          labels: {severity: warning, audience: human}
+          annotations:
+            summary: Requests with a bad or missing token are hitting the alert ingest endpoint.
+        - alert: HeimdallUnconfirmedAlerts
+          expr: increase(heimdall_alerts_total{outcome="unconfirmed"}[10m]) > 5
+          for: 0m
+          labels: {severity: warning, audience: human}
+          annotations:
+            summary: Heimdall received alerts that Prometheus is not firing. They may be forged.

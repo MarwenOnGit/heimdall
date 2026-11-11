@@ -1,0 +1,38 @@
+id: s16
+description: >-
+  Redis is up but slow: its network gains {delay_ms}ms of delay. cartservice
+  suffers, and restarting it would not help.
+difficulty: hard
+parameters:
+  delay_ms:
+    int_range: [1500, 3000]
+inject:
+  - type: manifest
+    content: |
+      apiVersion: chaos-mesh.org/v1alpha1
+      kind: NetworkChaos
+      metadata:
+        name: s16-redis-delay
+        namespace: boutique
+      spec:
+        action: delay
+        mode: all
+        selector:
+          namespaces: [boutique]
+          labelSelectors:
+            app.kubernetes.io/name: redis-cart
+        delay:
+          latency: "{delay_ms}ms"
+expected_alerts:
+  - alertname: HighLatencyP95
+    service: cartservice
+alert_timeout_seconds: 720
+ground_truth:
+  - category: network_degradation
+    resource:
+      kind: Deployment
+      namespace: boutique
+      name: redis-cart
+acceptable_fixes: [escalate]
+recovery_condition:
+  - 'heimdall:service_latency_ms:p95_rate5m{{service="cartservice"}} < 1000'

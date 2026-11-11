@@ -1,0 +1,36 @@
+id: s14
+description: >-
+  A red herring. A harmless commit to emailservice lands two minutes before
+  Redis is scaled to zero. The commit is unrelated to the outage.
+difficulty: hard
+inject:
+  - type: git_commit
+    message: "Add cost-center label to emailservice"
+    files:
+      online-boutique/overrides/emailservice-labels.yaml: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: emailservice
+          labels:
+            cost-center: growth
+    patches:
+      - overrides/emailservice-labels.yaml
+  - type: wait
+    seconds: 120
+  - type: kubectl
+    args: ["-n", "boutique", "scale", "deploy/redis-cart", "--replicas=0"]
+expected_alerts:
+  - alertname: HighErrorRate
+    service: frontend
+alert_timeout_seconds: 600
+ground_truth:
+  - category: dependency_down
+    resource:
+      kind: Deployment
+      namespace: boutique
+      name: redis-cart
+acceptable_fixes: [scale_deployment]
+recovery_condition:
+  - 'kube_deployment_status_replicas_available{{namespace="boutique", deployment="redis-cart"}} == 1'
+  - 'heimdall:service_success_rate:ratio_rate2m{{service="frontend"}} >= 0.99'

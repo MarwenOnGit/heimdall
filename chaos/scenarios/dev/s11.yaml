@@ -1,0 +1,70 @@
+id: s11
+description: >-
+  Two unrelated faults in one commit window: the memory limit of {oom_service}
+  is too low, and {image_service} points at an image tag that does not exist.
+difficulty: hard
+parameters:
+  oom_service:
+    # Only services whose normal memory use is well above the injected limit.
+    choice: [adservice, cartservice]
+  memory_mi:
+    int_range: [32, 48]
+  image_service:
+    choice: [productcatalogservice, shippingservice, currencyservice, paymentservice]
+inject:
+  - type: git_commit
+    message: "Right-size {oom_service} memory"
+    files:
+      online-boutique/overrides/{oom_service}-resources.yaml: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: {oom_service}
+        spec:
+          template:
+            spec:
+              containers:
+                - name: server
+                  resources:
+                    requests:
+                      memory: {memory_mi}Mi
+                    limits:
+                      memory: {memory_mi}Mi
+    patches:
+      - overrides/{oom_service}-resources.yaml
+  - type: git_commit
+    message: "Bump {image_service} to v0.10.8"
+    files:
+      online-boutique/overrides/{image_service}-image.yaml: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: {image_service}
+        spec:
+          template:
+            spec:
+              containers:
+                - name: server
+                  image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/{image_service}:v0.10.8
+    patches:
+      - overrides/{image_service}-image.yaml
+expected_alerts:
+  - alertname: ContainerOOMKilled
+    service: "{oom_service}"
+  - alertname: ImagePullFailing
+    service: "{image_service}"
+ground_truth:
+  - category: resource_limits_too_low
+    resource:
+      kind: Deployment
+      namespace: boutique
+      name: "{oom_service}"
+  - category: bad_image_reference
+    resource:
+      kind: Deployment
+      namespace: boutique
+      name: "{image_service}"
+acceptable_fixes: [patch_resources, rollback_deployment, open_pr]
+recovery_condition:
+  - 'kube_deployment_status_replicas_available{{namespace="boutique", deployment="{oom_service}"}} == 1'
+  - 'kube_deployment_status_replicas_unavailable{{namespace="boutique", deployment="{image_service}"}} == 0'

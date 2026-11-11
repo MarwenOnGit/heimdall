@@ -1,0 +1,7 @@
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!heimdall/**
+!docs/dependencies.yaml
+**/__pycache__

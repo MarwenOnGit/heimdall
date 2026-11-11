@@ -1,7 +1,43 @@
-# Marks Redis as stateful: Heimdall needs human approval to act on it.
+# Redis is the one stateful part of the workload.
+# - The label tells Heimdall it needs human approval to act on it.
+# - The data volume is a small, size-limited volume, so "disk full" is a real
+#   condition that can be reached and measured.
+# - A sidecar exports the volume's usage, because kind's storage reports no
+#   volume statistics to the kubelet.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: redis-cart
   labels:
     heimdall.io/stateful: "true"
+spec:
+  template:
+    spec:
+      containers:
+        - name: volume-exporter
+          image: quay.io/prometheus/node-exporter:v1.12.1-distroless
+          args:
+            - --collector.disable-defaults
+            - --collector.filesystem
+            - --collector.filesystem.mount-points-include=^/data$
+            - --collector.filesystem.fs-types-include=^tmpfs$
+            - --web.listen-address=:9101
+          ports:
+            - name: volume-metrics
+              containerPort: 9101
+          readinessProbe:
+            httpGet: {path: /, port: volume-metrics}
+          livenessProbe:
+            httpGet: {path: /, port: volume-metrics}
+          resources:
+            requests: {cpu: 5m, memory: 16Mi}
+            limits: {cpu: 50m, memory: 48Mi}
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+              readOnly: true
+      volumes:
+        - name: redis-data
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

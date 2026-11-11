@@ -1,0 +1,34 @@
+id: s10
+description: >-
+  The Redis data volume fills up. Redis can no longer save, starts refusing
+  writes, and the shop's cart breaks.
+difficulty: hard
+parameters:
+  fill_mb:
+    int_range: [60, 62]
+inject:
+  - type: kubectl
+    args:
+      - "-n"
+      - boutique
+      - exec
+      - deploy/redis-cart
+      - "-c"
+      - redis
+      - "--"
+      - sh
+      - "-c"
+      - "dd if=/dev/zero of=/data/import-backup.rdb bs=1M count={fill_mb} 2>/dev/null; true"
+expected_alerts:
+  - alertname: VolumeAlmostFull
+    service: redis-cart
+ground_truth:
+  - category: disk_pressure
+    resource:
+      kind: Deployment
+      namespace: boutique
+      name: redis-cart
+# Freeing space means deleting data, which is not something to automate.
+acceptable_fixes: [escalate]
+recovery_condition:
+  - '(1 - node_filesystem_avail_bytes{{namespace="boutique", mountpoint="/data"}} / node_filesystem_size_bytes{{namespace="boutique", mountpoint="/data"}}) < 0.9'

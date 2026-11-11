@@ -1,0 +1,20 @@
+# Scrapes the volume-usage exporter that runs next to Redis. kind's storage
+# reports no volume statistics to the kubelet, so the usual
+# kubelet_volume_stats_* series do not exist here.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: volume-usage
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames: [boutique]
+  selector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: Exists}
+  podMetricsEndpoints:
+    - port: volume-metrics
+      interval: 15s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+          targetLabel: service
