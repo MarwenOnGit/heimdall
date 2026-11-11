@@ -39,7 +39,7 @@ choices that differ from it are recorded in [docs/decisions.md](docs/decisions.m
 | M2 Chaos suite | 15 of 16 scenarios written; see the table below for which are verified |
 | M3 Ingest, incidents, audit | done, running in the cluster |
 | M4 Investigator | works end to end with a local model; accuracy not yet tuned or measured at scale |
-| M5 Policy gate | OPA policy, fail-closed gate and their tests written; not yet connected to a planner |
+| M5 Planner and policy gate | planner, OPA policy and fail-closed gate written and unit-tested; not yet connected to each other or to the cluster |
 | M6 – M11 | not started |
 
 ### What works today
@@ -81,6 +81,14 @@ it, the incident is escalated as unknown.
 
 The model runs locally through Ollama (`qwen3:8b` on a laptop GPU), with no
 cloud dependency. An API provider is not implemented yet.
+
+**Planner and policy (not wired in yet).** The planner lets the model choose
+actions, but only action types that can fix the diagnosed kind of cause, only
+on a resource named in the diagnosis, and only above the confidence
+threshold; anything else is dropped and the incident is escalated. The OPA
+policy then decides allow, needs approval or deny (33 rule tests, plus a
+property test that throws random proposals at the real engine and checks that
+nothing unsafe is let through). The gate denies when OPA cannot be reached.
 
 **Chaos suite.** Each scenario is a YAML file: how to inject the fault, which
 alerts must fire, the true root cause and the acceptable fixes. Parameters
@@ -143,6 +151,10 @@ make down              # delete the cluster
 uv run python -m chaos.run s05 --seed 1 --agent   # inject one fault and grade the diagnosis
 uv run python -m chaos.suite --runs 3 --agent     # every scenario, three seeds each
 ```
+
+A warning about load: the cluster, the workload's load generator and a local
+model on the GPU together push a laptop hard, and the suite runs for hours.
+Run single scenarios, or small batches, and watch the temperature.
 
 Every tool, image and chart version is pinned in
 [infra/versions.env](infra/versions.env).

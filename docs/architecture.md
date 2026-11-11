@@ -32,6 +32,9 @@ included in the `boutique` figure. It stays as the mesh.
 | Operation | Time |
 |---|---|
 | `make up` from scratch, images not cached | about 25 min |
-| `make up` with nothing to change | about 3 min |
+| `make up` from scratch, images served from the local caches | 5 min 21 s |
+| `make up` with nothing to change | 1 to 3 min |
 | `make reset` after a bad image, Redis scaled to 0, a deleted ConfigMap, a chaos experiment and a rogue git commit | 8 s |
 | Broken Deployment to alert delivered at the ingest endpoint | 98 s |
+| One investigation with `qwen3:8b` on an RTX 4050 (6 GB): bad image tag, 7 tool calls | 96 s |
+| One investigation with the same model: CPU stress, 15 tool calls, one rejected draft | 247 s |

@@ -76,3 +76,38 @@ spec assumed: cartservice calls hang rather than fail, so the alerts that fire
 are frontend errors and cartservice latency. The expected alerts follow what
 the system actually does. This makes the scenario harder, which is the point:
 the cause is two hops from the symptom.
+
+## 11. A plain HTTPS client for Kubernetes
+
+The spec names the official `kubernetes` Python client. Heimdall uses a small
+client built on `httpx` instead. The two identities are just two tokens, the
+requests are easy to fake in tests, and writes will need explicit control of
+`resourceVersion` preconditions and dry run, which is simpler at this level.
+
+## 12. The model replies with one JSON object per step
+
+Instead of provider-specific tool calling, every model turn is a JSON object
+(hypotheses, then either one tool request or a diagnosis) constrained by a
+schema. It works the same with any provider, small local models follow it
+more reliably, and each turn is trivially recordable for replay.
+
+## 13. Limits above the admission cap are denied, not sent for approval
+
+The spec sends any resource limit above the bounds to human approval. The
+admission policy rejects anything above 1Gi or 1 CPU regardless, so asking a
+human to approve it would be pointless. The OPA policy denies it. Approval is
+asked only for increases that more than double the current limit but stay
+under the cap. Lowering a limit is denied.
+
+## 14. A plan that breaks a limit is escalated whole
+
+If the model proposes one acceptable action and one that targets a symptom or
+is not allowed for the cause, the planner does not run the acceptable half.
+The plan was produced by reasoning that went wrong somewhere, so a human gets
+all of it.
+
+## 15. The local model runs on the host, reached through a relay
+
+Ollama listens on localhost only. A small relay container bound to the kind
+bridge address forwards to it, and Heimdall sends `Host: localhost` because
+Ollama refuses other host names. Nothing leaves the machine.
