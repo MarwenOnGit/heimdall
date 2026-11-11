@@ -1,0 +1,102 @@
+# Heimdall itself. ${HEIMDALL_IMAGE} is filled in by infra/bootstrap.sh.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: heimdall-data
+  namespace: heimdall
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: heimdall
+  namespace: heimdall
+  labels: {app.kubernetes.io/name: heimdall}
+spec:
+  replicas: 1
+  # One writer for the SQLite file: stop the old pod before starting the new.
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: heimdall}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: heimdall}
+    spec:
+      # No Kubernetes API access yet; the two scoped identities are mounted
+      # explicitly when the investigator and executor are added.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: heimdall
+          image: ${HEIMDALL_IMAGE}
+          ports: [{containerPort: 8000, name: http}]
+          env:
+            - name: HEIMDALL_ALERT_TOKEN
+              valueFrom:
+                secretKeyRef: {name: heimdall-alert-token, key: token}
+            - {name: HEIMDALL_DB, value: /data/heimdall.sqlite}
+            - {name: HEIMDALL_PROMETHEUS_URL, value: "http://kps-prometheus.monitoring.svc:9090"}
+            - {name: HEIMDALL_DEPENDENCIES, value: /app/docs/dependencies.yaml}
+            - {name: HEIMDALL_AUDIT_KEY, value: /keys/audit.key}
+            - {name: HEIMDALL_GITEA_URL, value: "http://gitea-http.gitea.svc:3000"}
+            - name: HEIMDALL_GITEA_TOKEN
+              valueFrom:
+                secretKeyRef: {name: heimdall-gitea, key: token}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: audit-key, mountPath: /keys, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: heimdall-data}
+        - name: audit-key
+          secret: {secretName: heimdall-audit-key}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: heimdall
+  namespace: heimdall
+spec:
+  selector: {app.kubernetes.io/name: heimdall}
+  ports: [{port: 8000, targetPort: http, name: http}]
+---
+# Only Alertmanager may reach the ingest port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: heimdall-ingress
+  namespace: heimdall
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: heimdall}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: alertmanager}
+      ports: [{port: 8000}]

@@ -17,6 +17,10 @@ kube-state-metrics:
 prometheus:
   prometheusSpec:
     retention: 2d
+    # No external labels: alerts must carry exactly the labels of the ALERTS
+    # series, because Heimdall confirms each alert against Prometheus.
+    prometheusExternalLabelNameClear: true
+    replicaExternalLabelNameClear: true
     scrapeInterval: 15s
     evaluationInterval: 15s
     # Pick up ServiceMonitors, PodMonitors and PrometheusRules from every

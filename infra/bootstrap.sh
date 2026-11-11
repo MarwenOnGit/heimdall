@@ -130,11 +130,19 @@ k -n heimdall create configmap heimdall-allowed-images --from-literal=images="$i
   --dry-run=client -o yaml | k apply -f - >/dev/null
 k apply -f "$ROOT/infra/rbac/" -f "$ROOT/infra/admission/actor-policy.yaml" >/dev/null
 
-# --- temporary alert echo endpoint (replaced by Heimdall in M3) -----------
-k -n heimdall create configmap heimdall-echo --from-file="$ROOT/infra/echo/echo.py" \
-  --dry-run=client -o yaml | k apply -f - >/dev/null
+# --- Heimdall -------------------------------------------------------------
+# Key that signs audit log checkpoints. Generated once.
+if ! k -n heimdall get secret heimdall-audit-key >/dev/null 2>&1; then
+  keyfile="$(mktemp)"
+  openssl genpkey -algorithm ed25519 -out "$keyfile"
+  k -n heimdall create secret generic heimdall-audit-key --from-file=audit.key="$keyfile" >/dev/null
+  rm -f "$keyfile"
+fi
+"$ROOT/infra/gitea/bot.sh"
+HEIMDALL_IMAGE="$("$ROOT/deploy/build.sh")"
+export HEIMDALL_IMAGE
 # shellcheck disable=SC2016  # envsubst wants the literal variable name
-envsubst '${ECHO_IMAGE}' <"$ROOT/infra/echo/echo.yaml" | k apply -f - >/dev/null
+envsubst '${HEIMDALL_IMAGE}' <"$ROOT/deploy/heimdall.yaml" | k apply -f - >/dev/null
 k -n heimdall rollout status deploy/heimdall --timeout=180s >/dev/null
 
 log "environment ready"
