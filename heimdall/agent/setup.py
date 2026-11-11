@@ -52,6 +52,13 @@ def build_llm(config: Config) -> LLM | None:
             base_url=config.ollama_url, timeout=600, headers={"Host": "localhost"}
         )
         return OllamaLLM(config.llm_model, client, context_tokens=config.llm_context_tokens)
+    if config.llm_provider == "anthropic":
+        # Imported here so the SDK is only needed when this provider is used.
+        from heimdall.llm.anthropic import AnthropicLLM
+
+        return AnthropicLLM(
+            config.llm_model, effort=config.llm_effort, fallbacks=config.llm_fallbacks
+        )
     raise ValueError(f"unknown LLM provider {config.llm_provider!r}")
 
 

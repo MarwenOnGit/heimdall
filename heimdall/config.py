@@ -24,6 +24,7 @@ class Config:
     kube_ca_file: Path | None
     namespaces: frozenset[str]
     # "off" disables the investigator: alerts are only grouped into incidents.
+    # Otherwise "ollama" (local) or "anthropic" (API).
     llm_provider: str
     llm_model: str
     ollama_url: str
@@ -44,6 +45,9 @@ class Config:
     opa_url: str
     # Off for the "without search" benchmark comparison.
     search_past_incidents: bool = True
+    # Anthropic provider only. Effort: low, medium, high, xhigh or max.
+    llm_effort: str | None = None
+    llm_fallbacks: bool = True
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -51,6 +55,7 @@ class Config:
             value = os.environ.get(name)
             return Path(value) if value else None
 
+        provider = os.environ.get("HEIMDALL_LLM_PROVIDER", "off")
         return cls(
             alert_token=os.environ.get("HEIMDALL_ALERT_TOKEN", ""),
             db_path=Path(os.environ.get("HEIMDALL_DB", "heimdall.sqlite")),
@@ -80,8 +85,9 @@ class Config:
             namespaces=frozenset(
                 n for n in os.environ.get("HEIMDALL_NAMESPACES", "boutique").split(",") if n
             ),
-            llm_provider=os.environ.get("HEIMDALL_LLM_PROVIDER", "off"),
-            llm_model=os.environ.get("HEIMDALL_LLM_MODEL", "qwen3:8b"),
+            llm_provider=provider,
+            llm_model=os.environ.get("HEIMDALL_LLM_MODEL")
+            or ("claude-opus-5-5" if provider == "anthropic" else "qwen3:8b"),
             ollama_url=os.environ.get("HEIMDALL_OLLAMA_URL", "http://127.0.0.1:11434"),
             llm_context_tokens=int(os.environ.get("HEIMDALL_LLM_CONTEXT_TOKENS", "16384")),
             settle_seconds=float(os.environ.get("HEIMDALL_SETTLE_SECONDS", "45")),
@@ -98,4 +104,6 @@ class Config:
             opa_url=os.environ.get("HEIMDALL_OPA_URL", "http://127.0.0.1:8181"),
             search_past_incidents=os.environ.get("HEIMDALL_SEARCH_PAST_INCIDENTS", "true")
             != "false",
+            llm_effort=os.environ.get("HEIMDALL_LLM_EFFORT") or None,
+            llm_fallbacks=os.environ.get("HEIMDALL_LLM_FALLBACKS", "true") != "false",
         )

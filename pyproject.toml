@@ -14,6 +14,7 @@ dependencies = [
     "uvicorn>=0.54.0",
     "prometheus-client>=0.26.0",
     "promql-parser>=0.12.0",
+    "anthropic>=2.8.0",
 ]
 
 [project.scripts]
