@@ -42,6 +42,8 @@ class Config:
     verify_timeout_seconds: float
     actor_token_file: Path | None
     opa_url: str
+    # Off for the "without search" benchmark comparison.
+    search_past_incidents: bool = True
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -94,4 +96,6 @@ class Config:
             verify_timeout_seconds=float(os.environ.get("HEIMDALL_VERIFY_TIMEOUT_SECONDS", "300")),
             actor_token_file=path("HEIMDALL_ACTOR_TOKEN_FILE"),
             opa_url=os.environ.get("HEIMDALL_OPA_URL", "http://127.0.0.1:8181"),
+            search_past_incidents=os.environ.get("HEIMDALL_SEARCH_PAST_INCIDENTS", "true")
+            != "false",
         )

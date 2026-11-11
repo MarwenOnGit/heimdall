@@ -108,7 +108,10 @@ class Investigator:
         first_look: Callable[[Incident], list[tuple[str, dict[str, Any]]]] | None = None,
         resource_exists: Callable[[ResourceRef], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        not_evidence: frozenset[str] = frozenset(),
     ) -> None:
+        # Names of tools whose output may guide the search but not back a diagnosis.
+        self._not_evidence = not_evidence
         self._llm = llm
         self._registry = registry
         self._audit = audit
@@ -176,6 +179,13 @@ class Investigator:
             if e.event_type == EventType.TOOL_RESULT
         }
 
+    def _uncitable(self, incident_id: str) -> set[str]:
+        return {
+            e.payload["call_id"]
+            for e in self._audit.events(incident_id)
+            if e.event_type == EventType.TOOL_RESULT and e.payload["tool"] in self._not_evidence
+        }
+
     def _remaining(self, run: Investigation, started: float) -> str | None:
         """Why the investigation must stop now, or None if it may continue."""
         if run.tool_calls >= self._budget.max_tool_calls:
@@ -228,6 +238,7 @@ class Investigator:
                         self._tool_outputs(incident.id),
                         min_evidence=self._budget.min_evidence,
                         resource_exists=self._resource_exists,
+                        not_evidence=self._uncitable(incident.id),
                     )
                     if not problems:
                         run.diagnosis = diagnosis

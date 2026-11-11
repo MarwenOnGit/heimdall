@@ -67,6 +67,15 @@ CREATE TABLE IF NOT EXISTS approvals (
     decided_at       TEXT
 );
 
+CREATE TABLE IF NOT EXISTS postmortems (
+    incident_id  TEXT PRIMARY KEY,
+    generated_at TEXT NOT NULL,
+    opened_at    TEXT NOT NULL,
+    scenario     TEXT,
+    scenario_set TEXT,
+    data_json    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

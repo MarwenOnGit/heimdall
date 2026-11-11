@@ -22,6 +22,7 @@ from heimdall.core.audit import AuditLog
 from heimdall.core.confirm import PrometheusConfirmer
 from heimdall.core.incidents import IncidentManager
 from heimdall.core.store import connect
+from heimdall.report.store import PostmortemStore, PostmortemWriter
 from heimdall.tools.dependencies import DependencyGraph
 
 ANCHOR_REPO = "heimdall/audit-anchors"
@@ -70,6 +71,9 @@ def build(config: Config) -> Heimdall:
             every=config.anchor_every_events,
         )
 
+    postmortems = PostmortemStore(conn)
+    audit.subscribe(PostmortemWriter(audit, postmortems).on_event)
+
     confirmer = PrometheusConfirmer(httpx.Client(base_url=config.prometheus_url, timeout=10))
     # Pick up anything a previous run left unfinished.
     incidents.reconcile()
@@ -79,7 +83,7 @@ def build(config: Config) -> Heimdall:
     pipeline = None
     llm = build_llm(config)
     if llm is not None:
-        investigator = build_investigator(config, audit, llm)
+        investigator = build_investigator(config, audit, llm, postmortems)
         actions = ActionStore(conn)
         pipeline = build_pipeline(config, audit, llm, incidents, actions, approvals)
         worker = Worker(

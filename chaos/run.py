@@ -109,7 +109,16 @@ def wait_for_agent(since: datetime, timeout: float) -> list[dict[str, Any]]:
     return mine
 
 
-def run(scenario: Scenario, seed: int, keep: bool, agent: bool = False) -> dict[str, Any]:
+def label_run(scenario_id: str | None, scenario_set: str = "dev") -> None:
+    """Tell Heimdall which scenario is running, so its past-incident search
+    leaves out reports about the same scenario (and all hold-out reports)."""
+    args = ["--scenario", scenario_id, "--set", scenario_set] if scenario_id else ["--clear"]
+    cluster.kubectl("-n", "heimdall", "exec", "deploy/heimdall", "--", "heimdall", "label", *args)
+
+
+def run(
+    scenario: Scenario, seed: int, keep: bool, agent: bool = False, scenario_set: str = "dev"
+) -> dict[str, Any]:
     params = sample(scenario.parameters, seed)
     rendered = scenario.render(params)
     result: dict[str, Any] = {
@@ -127,6 +136,8 @@ def run(scenario: Scenario, seed: int, keep: bool, agent: bool = False) -> dict[
         result["error"] = f"cluster not at baseline: {problems}"
         return result
 
+    if agent:
+        label_run(scenario.id, scenario_set)
     time.sleep(params["offset_seconds"])
     injected_at = datetime.now(UTC)
     result["injected_at"] = injected_at.isoformat()
@@ -160,6 +171,8 @@ def run(scenario: Scenario, seed: int, keep: bool, agent: bool = False) -> dict[
             )
             log(f"grade: {result['grade']}")
     finally:
+        if agent:
+            label_run(None)
         if not keep:
             cluster.reset()
             leftover = cluster.wait_for_baseline(timeout=600)
@@ -181,7 +194,7 @@ def main() -> int:
     args = parser.parse_args()
 
     scenario = find_scenario(args.scenario, args.scenario_set)
-    result = run(scenario, args.seed, args.keep, args.agent)
+    result = run(scenario, args.seed, args.keep, args.agent, args.scenario_set)
 
     RESULTS.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")

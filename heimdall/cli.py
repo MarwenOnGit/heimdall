@@ -109,6 +109,40 @@ def cmd_incident_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_incident_postmortem(args: argparse.Namespace) -> int:
+    """Build the report from the audit log, now. Nothing stored is trusted."""
+    from heimdall.report.postmortem import build, render_html, render_markdown
+
+    _, log = _manager(args)
+    try:
+        postmortem = build(args.id, log.events(args.id))
+    except KeyError:
+        print(f"no incident {args.id}")
+        return 1
+    text = render_html(postmortem) if args.html else render_markdown(postmortem)
+    if args.out:
+        args.out.write_text(text)
+        print(f"wrote {args.out}")
+    else:
+        print(text, end="")
+    return 0
+
+
+def cmd_label(args: argparse.Namespace) -> int:
+    """Say which benchmark scenario is running, so reports about it are kept
+    out of searches during other runs of the same scenario."""
+    from heimdall.report.store import PostmortemStore, RunLabel
+
+    store = PostmortemStore(connect(args.db or Config.from_env().db_path))
+    if args.clear:
+        store.set_label(RunLabel())
+    elif args.scenario:
+        store.set_label(RunLabel(args.scenario, args.set))
+    label = store.label()
+    print(f"scenario={label.scenario or '-'} set={label.scenario_set or '-'}")
+    return 0
+
+
 def cmd_freeze(args: argparse.Namespace) -> int:
     """The kill switch. It is read before every action, so it takes effect
     immediately, with no restart."""
@@ -124,11 +158,13 @@ def cmd_incident_investigate(args: argparse.Namespace) -> int:
     """Investigate one incident now, in the foreground, and print the result."""
     from heimdall.agent.setup import build_investigator, build_llm
     from heimdall.agent.worker import investigate_incident
+    from heimdall.report.store import PostmortemStore, PostmortemWriter
 
     config = Config.from_env()
     conn = connect(args.db or config.db_path)
     log = AuditLog(conn)
     manager = IncidentManager(conn, log, DependencyGraph.load(config.dependencies_path))
+    log.subscribe(PostmortemWriter(log, PostmortemStore(conn)).on_event)
     llm = build_llm(config)
     if llm is None:
         print("no LLM configured (HEIMDALL_LLM_PROVIDER)")
@@ -138,7 +174,9 @@ def cmd_incident_investigate(args: argparse.Namespace) -> int:
     except KeyError:
         print(f"no incident {args.id}")
         return 1
-    run = investigate_incident(incident, manager, build_investigator(config, log, llm), conn)
+    run = investigate_incident(
+        incident, manager, build_investigator(config, log, llm, PostmortemStore(conn)), conn
+    )
     print(run.diagnosis.model_dump_json(indent=2))
     print(
         f"\n{run.stopped_because}: {run.tool_calls} tool calls, {run.llm_calls} LLM calls, "
@@ -179,6 +217,20 @@ def main(argv: list[str] | None = None) -> int:
     show.add_argument("id")
     show.add_argument("--db", type=Path)
     show.set_defaults(func=cmd_incident_show)
+
+    postmortem = incident.add_parser("postmortem", help="print the report for an incident")
+    postmortem.add_argument("id")
+    postmortem.add_argument("--db", type=Path)
+    postmortem.add_argument("--html", action="store_true", help="HTML instead of Markdown")
+    postmortem.add_argument("--out", type=Path, help="write to a file")
+    postmortem.set_defaults(func=cmd_incident_postmortem)
+
+    label = commands.add_parser("label", help="show or set the benchmark run label")
+    label.add_argument("--db", type=Path)
+    label.add_argument("--scenario", help="scenario id, e.g. s04")
+    label.add_argument("--set", default="dev", choices=["dev", "holdout"])
+    label.add_argument("--clear", action="store_true")
+    label.set_defaults(func=cmd_label)
 
     investigate = incident.add_parser("investigate")
     investigate.add_argument("id")

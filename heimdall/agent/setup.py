@@ -23,8 +23,10 @@ from heimdall.llm.ollama import OllamaLLM
 from heimdall.notify.webhook import Notifier, NullNotifier, WebhookNotifier
 from heimdall.policy.gate import OpaHttpGate
 from heimdall.policy.input_builder import InputBuilder
+from heimdall.report.store import PostmortemStore
 from heimdall.tools.dependencies import DependencyGraph, DependencyTools
 from heimdall.tools.git import GitTools
+from heimdall.tools.history import NOT_EVIDENCE, HistoryTools
 from heimdall.tools.k8s import KubernetesTools
 from heimdall.tools.kube import KubeClient, KubeError
 from heimdall.tools.loki import LokiTools
@@ -156,7 +158,9 @@ def build_pipeline(
     )
 
 
-def build_investigator(config: Config, audit: AuditLog, llm: LLM) -> Investigator:
+def build_investigator(
+    config: Config, audit: AuditLog, llm: LLM, postmortems: PostmortemStore | None = None
+) -> Investigator:
     kube = read_only_kube(config)
     namespaces = set(config.namespaces)
     graph = DependencyGraph.load(config.dependencies_path)
@@ -172,6 +176,8 @@ def build_investigator(config: Config, audit: AuditLog, llm: LLM) -> Investigato
     if config.gitea_url:
         git_client = httpx.Client(base_url=config.gitea_url, timeout=15)
         tools += GitTools(git_client, config.gitops_repo).tools()
+    if postmortems is not None and config.search_past_incidents:
+        tools += HistoryTools(postmortems).tools()
     registry = ToolRegistry(audit)
     for tool in tools:
         registry.register(tool)
@@ -197,4 +203,5 @@ def build_investigator(config: Config, audit: AuditLog, llm: LLM) -> Investigato
         ),
         first_look=first_look(graph, config.namespaces),
         resource_exists=resource_exists,
+        not_evidence=NOT_EVIDENCE,
     )
