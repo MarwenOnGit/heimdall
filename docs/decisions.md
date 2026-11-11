@@ -125,17 +125,101 @@ Proposals run in order. If one is denied, rejected by the API server, needs
 approval or fails, the rest are not attempted: later steps were chosen on
 the assumption that earlier ones worked.
 
-## 18. Rollback targets are judged by an approximation, for now
+## 18. Rollback targets: measured where possible, estimated otherwise
 
 The policy only allows a rollback to a revision that was healthy for ten
-minutes. Kubernetes does not record that. Until Heimdall tracks availability
-itself (the spec's "revision tracker"), a superseded revision is credited
-with the time until the next revision was created. A revision that was
-broken while it was current is over-credited. The admission policy still
-limits a rollback to images that were deployed from git.
+minutes. Kubernetes does not record that, so Heimdall measures it: every 30
+seconds a Deployment that is fully rolled out and Available has the elapsed
+time credited to its current revision (`heimdall/core/revisions.py`). The
+spec describes a watch; a poll is simpler and precise enough for a
+ten-minute threshold. Gaps longer than 90 seconds credit nothing, so time
+when Heimdall was down does not count.
 
-## 19. No live mode yet
+Revisions older than anything the tracker has seen are still estimated from
+ReplicaSet creation times, which over-credits a revision that was broken
+while it was current. That only affects revisions deployed before Heimdall
+was installed. The admission policy limits a rollback to images that were
+deployed from git either way.
 
-`HEIMDALL_MODE` accepts `observe` and `dry_run`; anything else is refused at
-startup. Live execution only makes sense together with verification and
-automatic rollback, which belong to the next milestone.
+## 19. Live mode needs a verifier
+
+`HEIMDALL_MODE` accepts `observe`, `dry_run` and `live`. The pipeline refuses
+to be built in live mode without a verifier: a write that is not checked
+afterwards is not allowed to exist. The default in the cluster manifest
+stays `dry_run`.
+
+## 20. Sync is paused by patching the Application, not through the Argo CD API
+
+The spec suggests a project-scoped Argo CD role. Instead the actor identity
+may patch exactly one `Application` object, and a second admission policy
+limits that patch to switching automatic sync off and on. This keeps one
+identity and one enforcement point (the API server) and needs no Argo CD
+token. If the pause fails, the drift-creating write is not attempted.
+
+## 21. The reconciling pull request is a revert
+
+Heimdall does not write manifests. The pull request it opens reverts the most
+recent commit that touched the files of the affected resource, and the policy
+checks the files and size of that real diff. A fix that cannot be expressed
+as a revert is left to a human.
+
+## 22. Opening an approval link changes nothing
+
+Chat clients fetch links to build previews. So `GET /approvals/<id>` only
+shows what is being asked; deciding takes a `POST` with the token in the
+body. Tokens are an HMAC over the approval id, the hash of the exact action,
+the object version and the expiry. Without `HEIMDALL_APPROVAL_SECRET` there
+is no approval flow and such actions are escalated.
+
+## 23. Postmortems are rendered in Python, with no model-written text
+
+The spec asks for a Jinja template and allows a model to write the summary
+and follow-ups, with a citation check. The report is instead built and
+rendered by plain Python (`heimdall/report/postmortem.py`): one dependency
+fewer, and escaping is in one place. No model writes any part of it.
+Follow-ups are derived from the record (an undo that failed, a pull request
+waiting, an escalation). The impact section lists services, alerts and
+durations but not the success-rate trough, which is not in the audit log.
+
+Reports are written when an incident reaches `mitigated` or a terminal
+state, by a listener on the audit log, so no code path can forget to.
+
+## 24. Past incidents are hints, not evidence
+
+`search_past_incidents` returns text about other incidents, part of it
+written by a model. A diagnosis that cites that tool as evidence is
+rejected. Otherwise one wrong postmortem could reproduce itself.
+
+Leakage rules (spec 13.3) are enforced where reports are stored: the
+benchmark harness labels each run (`heimdall label --scenario s04`), a
+labelled run only searches reports from dev runs of other scenarios, and
+hold-out reports are never searchable. Unlabelled reports are left out
+during a labelled run, because nothing says which scenario they are about.
+
+## 25. The API provider gets its schema as an instruction
+
+Heimdall's reply schemas use number ranges and free-form argument objects,
+which strict structured output does not accept. The Anthropic provider
+therefore puts the JSON Schema in a cached system block and relies on the
+validation and retry every provider already goes through. It uses the
+official SDK, sends no sampling parameters (current models reject them),
+and enables the API's refusal fallback so a declined request is retried on
+another model; the model that answered is recorded with every call. A
+refusal that survives is an `LLMError`, which ends in escalation.
+
+## 26. s15 forces a plan through a benchmark-only switch
+
+s15 needs a wrong fix to be attempted. The real planner would drop it, so
+`HEIMDALL_FORCED_PLAN` replaces the planner with a fixed plan. It skips the
+planner's limits and nothing else: policy, admission, verification and undo
+still apply, the audit log marks the plan as forced, and startup logs a
+warning. It must not be set outside the benchmark.
+
+## 27. Injection tests assume the model obeys
+
+A test that shows a model ignoring an injection proves little: the next
+model, or the next phrasing, may not. Each test in `tests/injection/`
+scripts the model to do what the hostile text asks and passes only if a
+lower layer stops it. Whether a real model is fooled is a benchmark
+question. i10 and the admission half of i01 need an API server and live in
+`make test-integration`.

@@ -16,16 +16,22 @@ from typing import Any
 from heimdall.core.actions import RAN, ActionStatus, ActionStore
 from heimdall.core.audit import AuditLog, EventType
 from heimdall.core.models import ActionProposal, ActionType
+from heimdall.executor.gitops import GitOps, GitOpsError
 from heimdall.policy.gate import Decision
 from heimdall.tools.kube import KubeClient, KubeError
 
 RESTART_ANNOTATION = "kubectl.kubernetes.io/restartedAt"
+# Actions that leave the cluster different from what git describes. Restarts
+# and replica counts are ignored by Argo CD and are not drift.
+DRIFT_CREATING = frozenset({ActionType.ROLLBACK_DEPLOYMENT, ActionType.PATCH_RESOURCES})
 
 
 @dataclass(frozen=True)
 class Outcome:
     status: ActionStatus
     detail: str
+    # State of the target before the write; what an undo would restore.
+    previous: dict[str, Any] | None = None
 
 
 class Executor:
@@ -37,8 +43,10 @@ class Executor:
         audit: AuditLog,
         *,
         dry_run: bool = True,
+        gitops: GitOps | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        self._gitops = gitops
         self._actor = actor
         self._reader = reader
         self._actions = actions
@@ -65,19 +73,21 @@ class Executor:
             outcome = Outcome(ActionStatus.DENIED, "; ".join(decision.reasons))
         elif decision.decision == "require_approval":
             outcome = Outcome(ActionStatus.AWAITING_APPROVAL, "; ".join(decision.reasons))
-        elif proposal.target is None or proposal.type is ActionType.OPEN_PR:
-            outcome = Outcome(ActionStatus.RECORDED, self._describe_passive(proposal))
+        elif proposal.type is ActionType.OPEN_PR:
+            outcome = self._open_pr(incident_id, proposal)
+        elif proposal.target is None:
+            outcome = Outcome(ActionStatus.RECORDED, proposal.summary or proposal.justification)
         else:
             earlier = self._actions.find(incident_id, proposal)
             if earlier is not None and earlier.status in RAN:
                 # A restart must never apply the same action twice.
-                return Outcome(earlier.status, earlier.detail)
+                return Outcome(earlier.status, earlier.detail, earlier.previous)
             with self._lock(proposal):
                 outcome = self._write(proposal, resource_version)
 
         self._actions.record(
             incident_id, proposal, decision=decision.decision, status=outcome.status,
-            detail=outcome.detail,
+            detail=outcome.detail, previous=outcome.previous,
         )  # fmt: skip
         self._audit.append(
             EventType.ACTION_EXECUTED,
@@ -93,19 +103,43 @@ class Executor:
         )
         return outcome
 
-    def _describe_passive(self, proposal: ActionProposal) -> str:
-        if proposal.type is ActionType.OPEN_PR:
-            return "pull requests are not implemented yet; a human should make this change"
-        return proposal.summary or proposal.justification
+    def _open_pr(self, incident_id: str, proposal: ActionProposal) -> Outcome:
+        if self._gitops is None or proposal.target is None:
+            return Outcome(
+                ActionStatus.RECORDED, "no git server configured; a human should make this change"
+            )
+        try:
+            if self._dry_run:
+                revert = self._gitops.plan_revert(proposal.target)
+                return Outcome(
+                    ActionStatus.RECORDED,
+                    f"dry run: would open a pull request reverting {revert.commit[:10]} "
+                    f"({revert.message!r}, {revert.diff_lines} lines)",
+                )
+            pr = self._gitops.open_revert_pr(
+                incident_id, proposal.target, proposal.summary or proposal.justification
+            )
+        except GitOpsError as e:
+            return Outcome(ActionStatus.FAILED, f"could not open the pull request: {e}")
+        return Outcome(ActionStatus.PR_OPENED, pr.url, {"pull_request": pr.number})
 
     # -------------------------------------------------------------- writes
 
     def _write(self, proposal: ActionProposal, resource_version: str | None) -> Outcome:
         base = f"/apis/apps/v1/namespaces/{proposal.namespace}/deployments/{proposal.name}"
         try:
+            previous = self._snapshot(base)
             path, body, patch_type = self._request(proposal, base)
         except KubeError as e:
             return Outcome(ActionStatus.FAILED, f"could not prepare the change: {e.message}")
+        if not self._dry_run and self._gitops is not None and proposal.type in DRIFT_CREATING:
+            # After this write the cluster will differ from git. Stop Argo CD
+            # from syncing on its own first, or the next unrelated commit
+            # would put the broken state back. No pause, no write.
+            try:
+                self._gitops.pause_sync()
+            except (GitOpsError, KubeError) as e:
+                return Outcome(ActionStatus.FAILED, f"could not pause GitOps sync: {e}")
         if resource_version is not None:
             # Makes the write conditional: the API server answers 409 if the
             # object changed since the policy gate read it.
@@ -119,8 +153,85 @@ class Executor:
                 return Outcome(ActionStatus.REJECTED_BY_API, e.message)
             return Outcome(ActionStatus.FAILED, f"Kubernetes API returned {e.status}")
         if self._dry_run:
-            return Outcome(ActionStatus.DRY_RUN, "accepted by the API server in dry-run mode")
-        return Outcome(ActionStatus.EXECUTED, "applied")
+            return Outcome(
+                ActionStatus.DRY_RUN, "accepted by the API server in dry-run mode", previous
+            )
+        return Outcome(ActionStatus.EXECUTED, "applied", previous)
+
+    def _snapshot(self, base: str) -> dict[str, Any]:
+        """The parts of a Deployment that an action can change."""
+        deployment = self._reader.get(base)
+        return {
+            "replicas": deployment["spec"].get("replicas"),
+            "containers": [
+                {
+                    "name": c["name"],
+                    "image": c["image"],
+                    "limits": c.get("resources", {}).get("limits", {}),
+                }
+                for c in deployment["spec"]["template"]["spec"]["containers"]
+            ],
+        }
+
+    # ---------------------------------------------------------------- undo
+
+    def undo(self, incident_id: str, proposal: ActionProposal) -> Outcome:
+        """Put the target back as it was before `proposal` ran.
+
+        The undo goes through the same actor identity, so RBAC and the
+        admission policy apply to it too. It has no version precondition: the
+        object changed precisely because of the action being undone.
+        """
+        record = self._actions.find(incident_id, proposal)
+        if record is None or record.status is not ActionStatus.EXECUTED:
+            return Outcome(ActionStatus.FAILED, "there is no executed action to undo")
+        if proposal.type is ActionType.RESTART_DEPLOYMENT:
+            outcome = Outcome(ActionStatus.UNDONE, "a restart leaves nothing to undo")
+        elif record.previous is None:
+            outcome = Outcome(ActionStatus.FAILED, "the previous state was not recorded")
+        else:
+            outcome = self._restore(proposal, record.previous)
+
+        if outcome.status is ActionStatus.UNDONE:
+            self._actions.record(
+                incident_id, proposal, decision=record.decision, status=ActionStatus.UNDONE,
+                detail=outcome.detail,
+            )  # fmt: skip
+        self._audit.append(
+            EventType.ROLLBACK,
+            {
+                "proposal": proposal.model_dump(mode="json", exclude_none=True),
+                "restored": record.previous,
+                "status": outcome.status,
+                "detail": outcome.detail,
+            },
+            actor="executor",
+            incident_id=incident_id,
+        )
+        return outcome
+
+    def _restore(self, proposal: ActionProposal, previous: dict[str, Any]) -> Outcome:
+        base = f"/apis/apps/v1/namespaces/{proposal.namespace}/deployments/{proposal.name}"
+        if proposal.type is ActionType.SCALE_DEPLOYMENT:
+            path, patch_type = f"{base}/scale", "merge"
+            body: dict[str, Any] = {"spec": {"replicas": previous["replicas"]}}
+        elif proposal.type is ActionType.PATCH_RESOURCES:
+            path, patch_type = base, "strategic-merge"
+            body = _containers_patch(
+                [{"name": c["name"], "resources": {"limits": c["limits"]}}
+                 for c in previous["containers"]]
+            )  # fmt: skip
+        else:  # rollback_deployment
+            path, patch_type = base, "strategic-merge"
+            body = _containers_patch(
+                [{"name": c["name"], "image": c["image"]} for c in previous["containers"]]
+            )
+        try:
+            with self._lock(proposal):
+                self._actor.patch(path, body, patch_type=patch_type, dry_run=self._dry_run)
+        except KubeError as e:
+            return Outcome(ActionStatus.FAILED, f"undo refused by the API server: {e.message}")
+        return Outcome(ActionStatus.UNDONE, "previous state restored")
 
     def _request(self, proposal: ActionProposal, base: str) -> tuple[str, dict[str, Any], str]:
         """The path, body and patch type for a cluster write."""

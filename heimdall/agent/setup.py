@@ -1,5 +1,7 @@
 """Builds the investigator and its tools from configuration."""
 
+import logging
+import sqlite3
 from collections.abc import Callable
 from typing import Any
 
@@ -7,24 +9,33 @@ import httpx
 
 from heimdall.agent.investigator import Budget, Investigator
 from heimdall.agent.pipeline import Pipeline
-from heimdall.agent.planner import Planner
+from heimdall.agent.planner import ForcedPlanner, Planner
 from heimdall.config import Config
 from heimdall.core.actions import ActionStore
+from heimdall.core.approvals import ApprovalStore
 from heimdall.core.audit import AuditLog
 from heimdall.core.incidents import IncidentManager
 from heimdall.core.models import Incident, ResourceRef
+from heimdall.core.revisions import RevisionTracker
 from heimdall.executor.executor import Executor
+from heimdall.executor.gitops import GitOps
+from heimdall.executor.verifier import Verifier
 from heimdall.llm.base import LLM
 from heimdall.llm.ollama import OllamaLLM
+from heimdall.notify.webhook import Notifier, NullNotifier, WebhookNotifier
 from heimdall.policy.gate import OpaHttpGate
 from heimdall.policy.input_builder import InputBuilder
+from heimdall.report.store import PostmortemStore
 from heimdall.tools.dependencies import DependencyGraph, DependencyTools
 from heimdall.tools.git import GitTools
+from heimdall.tools.history import NOT_EVIDENCE, HistoryTools
 from heimdall.tools.k8s import KubernetesTools
 from heimdall.tools.kube import KubeClient, KubeError
 from heimdall.tools.loki import LokiTools
 from heimdall.tools.prometheus import PrometheusTools
 from heimdall.tools.registry import Tool, ToolRegistry
+
+log = logging.getLogger("heimdall.setup")
 
 # Kinds whose existence can be checked with the read-only identity.
 _PATHS = {
@@ -45,6 +56,13 @@ def build_llm(config: Config) -> LLM | None:
             base_url=config.ollama_url, timeout=600, headers={"Host": "localhost"}
         )
         return OllamaLLM(config.llm_model, client, context_tokens=config.llm_context_tokens)
+    if config.llm_provider == "anthropic":
+        # Imported here so the SDK is only needed when this provider is used.
+        from heimdall.llm.anthropic import AnthropicLLM
+
+        return AnthropicLLM(
+            config.llm_model, effort=config.llm_effort, fallbacks=config.llm_fallbacks
+        )
     raise ValueError(f"unknown LLM provider {config.llm_provider!r}")
 
 
@@ -87,35 +105,78 @@ def first_look(graph: DependencyGraph, namespaces: frozenset[str]) -> FirstLook:
     return collect
 
 
+def build_notifier(config: Config) -> Notifier:
+    if config.webhook_url:
+        return WebhookNotifier(httpx.Client(timeout=10), config.webhook_url)
+    return NullNotifier()
+
+
+def build_approvals(config: Config, conn: sqlite3.Connection) -> ApprovalStore | None:
+    """Without a secret there is no way to approve, and actions that need
+    approval are escalated instead."""
+    if not config.approval_secret:
+        return None
+    return ApprovalStore(conn, config.approval_secret.encode())
+
+
 def build_pipeline(
-    config: Config, audit: AuditLog, llm: LLM, manager: IncidentManager, actions: ActionStore
+    config: Config,
+    audit: AuditLog,
+    llm: LLM,
+    manager: IncidentManager,
+    actions: ActionStore,
+    approvals: ApprovalStore | None = None,
+    revisions: RevisionTracker | None = None,
 ) -> Pipeline | None:
     """The remediation pipeline for the configured mode, or None in observe mode."""
     if config.mode == "observe":
         return None
-    if config.mode != "dry_run":
-        raise ValueError(
-            f"mode {config.mode!r} is not supported: only observe and dry_run exist so far"
-        )
+    if config.mode not in ("dry_run", "live"):
+        raise ValueError(f"unknown mode {config.mode!r}: use observe, dry_run or live")
     if config.actor_token_file is None:
-        raise ValueError("dry_run mode needs HEIMDALL_ACTOR_TOKEN_FILE")
+        raise ValueError(f"{config.mode} mode needs HEIMDALL_ACTOR_TOKEN_FILE")
+    live = config.mode == "live"
     reader = read_only_kube(config)
     # A second client with a different identity. It shares nothing with the
     # read-only one.
     actor = KubeClient.connect(
         config.kube_url, config.actor_token_file.read_text().strip(), config.kube_ca_file or True
     )
+    gitops = None
+    if config.gitea_url and config.gitea_token:
+        git_client = httpx.Client(
+            base_url=config.gitea_url,
+            headers={"Authorization": f"token {config.gitea_token}"},
+            timeout=15,
+        )
+        gitops = GitOps(git_client, config.gitops_repo, actor)
+    verifier = Verifier(
+        httpx.Client(base_url=config.prometheus_url, timeout=10),
+        timeout_seconds=config.verify_timeout_seconds,
+    )
+    planner: Planner | ForcedPlanner = Planner(llm, audit)
+    if config.forced_plan:
+        log.warning("HEIMDALL_FORCED_PLAN is set: the planner is bypassed (benchmark only)")
+        planner = ForcedPlanner.from_json(config.forced_plan, audit)
     return Pipeline(
-        Planner(llm, audit),
-        InputBuilder(reader, actions, mode=config.mode),
+        planner,
+        InputBuilder(reader, actions, mode=config.mode, gitops=gitops, revisions=revisions),
         OpaHttpGate(httpx.Client(base_url=config.opa_url, timeout=5)),
-        Executor(actor, reader, actions, audit, dry_run=True),
+        Executor(actor, reader, actions, audit, dry_run=not live, gitops=gitops),
         manager,
         audit,
+        live=live,
+        verifier=verifier,
+        approvals=approvals,
+        notifier=build_notifier(config),
+        gitops=gitops,
+        public_url=config.public_url,
     )
 
 
-def build_investigator(config: Config, audit: AuditLog, llm: LLM) -> Investigator:
+def build_investigator(
+    config: Config, audit: AuditLog, llm: LLM, postmortems: PostmortemStore | None = None
+) -> Investigator:
     kube = read_only_kube(config)
     namespaces = set(config.namespaces)
     graph = DependencyGraph.load(config.dependencies_path)
@@ -131,6 +192,8 @@ def build_investigator(config: Config, audit: AuditLog, llm: LLM) -> Investigato
     if config.gitea_url:
         git_client = httpx.Client(base_url=config.gitea_url, timeout=15)
         tools += GitTools(git_client, config.gitops_repo).tools()
+    if postmortems is not None and config.search_past_incidents:
+        tools += HistoryTools(postmortems).tools()
     registry = ToolRegistry(audit)
     for tool in tools:
         registry.register(tool)
@@ -156,4 +219,5 @@ def build_investigator(config: Config, audit: AuditLog, llm: LLM) -> Investigato
         ),
         first_look=first_look(graph, config.namespaces),
         resource_exists=resource_exists,
+        not_evidence=NOT_EVIDENCE,
     )

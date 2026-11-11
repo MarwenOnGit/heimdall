@@ -51,9 +51,40 @@ CREATE TABLE IF NOT EXISTS actions (
     decision        TEXT NOT NULL,
     status          TEXT NOT NULL,
     detail          TEXT NOT NULL,
+    previous_json   TEXT,
     created_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS actions_by_incident ON actions (incident_id);
+
+CREATE TABLE IF NOT EXISTS approvals (
+    id               TEXT PRIMARY KEY,
+    incident_id      TEXT NOT NULL,
+    proposal_json    TEXT NOT NULL,
+    action_hash      TEXT NOT NULL,
+    resource_version TEXT,
+    expires_at       TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    decided_at       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS postmortems (
+    incident_id  TEXT PRIMARY KEY,
+    generated_at TEXT NOT NULL,
+    opened_at    TEXT NOT NULL,
+    scenario     TEXT,
+    scenario_set TEXT,
+    data_json    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS revision_availability (
+    namespace         TEXT NOT NULL,
+    deployment        TEXT NOT NULL,
+    revision          INTEGER NOT NULL,
+    first_seen_at     TEXT NOT NULL,
+    available_seconds REAL NOT NULL,
+    last_available_at TEXT,
+    PRIMARY KEY (namespace, deployment, revision)
+);
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,

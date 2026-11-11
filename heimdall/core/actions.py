@@ -6,6 +6,7 @@ idempotency across restarts, and for the kill switch.
 """
 
 import hashlib
+import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -30,12 +31,14 @@ CLUSTER_WRITES = frozenset(
 class ActionStatus(StrEnum):
     DRY_RUN = "dry_run"  # accepted by the API server in dry-run mode
     EXECUTED = "executed"
-    RECORDED = "recorded"  # nothing to run: escalate, none, or a PR not yet implemented
+    RECORDED = "recorded"  # nothing to run: escalate, none, or a PR that was only described
+    PR_OPENED = "pr_opened"
     AWAITING_APPROVAL = "awaiting_approval"
     DENIED = "denied"
     REJECTED_BY_API = "rejected_by_api"  # RBAC or the admission policy said no
     CONFLICT = "conflict"  # the target changed between the policy check and the write
     FAILED = "failed"
+    UNDONE = "undone"  # ran, did not fix the problem, and was reverted
 
 
 # Statuses that count as "this action ran" for rate limits. Dry runs count,
@@ -53,6 +56,8 @@ class ActionRecord:
     status: ActionStatus
     detail: str
     created_at: datetime
+    # What the target looked like before the action, so it can be undone.
+    previous: dict[str, Any] | None = None
 
 
 def idempotency_key(incident_id: str, proposal: ActionProposal) -> str:
@@ -89,15 +94,17 @@ class ActionStore:
         decision: str,
         status: ActionStatus,
         detail: str,
+        previous: dict[str, Any] | None = None,
     ) -> ActionRecord:
         """Store the outcome of a proposal. Recording the same action of the
         same incident again replaces the earlier outcome."""
         self._conn.execute(
             "INSERT INTO actions (incident_id, idempotency_key, type, namespace, name,"
-            " proposal_json, decision, status, detail, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " proposal_json, decision, status, detail, previous_json, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT (idempotency_key) DO UPDATE SET decision = excluded.decision,"
-            " status = excluded.status, detail = excluded.detail, created_at = excluded.created_at",
+            " status = excluded.status, detail = excluded.detail, created_at = excluded.created_at,"
+            " previous_json = COALESCE(excluded.previous_json, actions.previous_json)",
             (
                 incident_id,
                 idempotency_key(incident_id, proposal),
@@ -108,6 +115,7 @@ class ActionStore:
                 decision,
                 status,
                 detail,
+                json.dumps(previous) if previous is not None else None,
                 self._clock().isoformat(),
             ),
         )
@@ -173,4 +181,5 @@ def _record(row: sqlite3.Row) -> ActionRecord:
         status=ActionStatus(row["status"]),
         detail=row["detail"],
         created_at=datetime.fromisoformat(row["created_at"]),
+        previous=json.loads(row["previous_json"]) if row["previous_json"] else None,
     )

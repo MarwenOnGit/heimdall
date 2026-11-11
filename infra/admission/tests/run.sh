@@ -112,6 +112,22 @@ check admission "CPU limit 2" \
 check admission "remove the resource limits" \
   patch json "[{\"op\":\"remove\",\"path\":\"$c0/resources/limits\"}]"
 
+log "actor: the Argo CD Application"
+app=/apis/argoproj.io/v1alpha1/namespaces/argocd/applications/boutique
+check allow "pause automatic sync" api_patch "$app" merge '{"spec":{"syncPolicy":{"automated":null}}}'
+check allow "resume automatic sync" \
+  api_patch "$app" merge '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":false}}}}'
+check admission "switch self-heal on" \
+  api_patch "$app" merge '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
+check admission "point the Application at another path" \
+  api_patch "$app" merge '{"spec":{"source":{"path":"somewhere-else"}}}'
+check admission "deploy into another namespace" \
+  api_patch "$app" merge '{"spec":{"destination":{"namespace":"kube-system"}}}'
+check admission "trigger a sync operation" \
+  api_patch "$app" merge '{"operation":{"sync":{"revision":"main"}}}'
+check rbac "patch another Application" \
+  api_patch /apis/argoproj.io/v1alpha1/namespaces/argocd/applications/other merge '{"spec":{}}'
+
 log "actor: operations RBAC must reject"
 check rbac "delete a Deployment" actor -n boutique delete deploy "$D" --dry-run=server
 check rbac "read a Deployment" actor -n boutique get deploy "$D"

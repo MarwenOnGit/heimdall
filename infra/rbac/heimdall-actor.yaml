@@ -42,3 +42,31 @@ metadata:
   annotations:
     kubernetes.io/service-account.name: heimdall-actor
 type: kubernetes.io/service-account-token
+---
+# The actor may patch exactly one Argo CD Application, to pause and resume
+# automatic sync around a live fix. The admission policy limits the patch to
+# the sync setting.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: heimdall-actor-gitops
+  namespace: argocd
+rules:
+  - apiGroups: [argoproj.io]
+    resources: [applications]
+    resourceNames: [boutique]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: heimdall-actor-gitops
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: heimdall-actor-gitops
+subjects:
+  - kind: ServiceAccount
+    name: heimdall-actor
+    namespace: heimdall

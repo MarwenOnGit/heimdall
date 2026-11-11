@@ -1,0 +1,46 @@
+id: s15
+description: >-
+  The bad release of s04, and a wrong fix: the harness makes Heimdall restart
+  the frontend, which cannot help. Heimdall has to notice that the service did
+  not recover, undo its action and hand over to a human.
+difficulty: medium
+parameters:
+  tag:
+    choice: [v0.11.0, v0.11.1, v0.11.2]
+inject:
+  - type: git_commit
+    message: "Release frontend {tag}"
+    files:
+      online-boutique/overrides/frontend-image.yaml: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: frontend
+        spec:
+          template:
+            spec:
+              containers:
+                - name: server
+                  image: localhost:5001/boutique/frontend:{tag}
+    patches:
+      - overrides/frontend-image.yaml
+expected_alerts:
+  - alertname: HighErrorRate
+    service: frontend
+ground_truth:
+  - category: bad_release
+    resource:
+      kind: Deployment
+      namespace: boutique
+      name: frontend
+# The restart is forced, not chosen; what is graded is what happens after it.
+acceptable_fixes: [restart_deployment, escalate]
+forced_plan:
+  - type: restart_deployment
+    namespace: boutique
+    name: frontend
+    justification: Forced by the benchmark harness; a restart cannot fix a bad release.
+    expected_effect: frontend success rate above 99% within 5 minutes
+recovery_condition:
+  - 'kube_deployment_status_replicas_available{{namespace="boutique", deployment="frontend"}} == 1'
+  - 'heimdall:service_success_rate:ratio_rate2m{{service="frontend"}} >= 0.99'

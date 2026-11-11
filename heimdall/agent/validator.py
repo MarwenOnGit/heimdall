@@ -7,7 +7,7 @@ output.
 """
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Set
 
 from heimdall.core.models import Diagnosis, ResourceRef, RootCauseCategory
 from heimdall.tools.sanitize import FLAG
@@ -28,10 +28,13 @@ def validate(
     *,
     min_evidence: int = 2,
     resource_exists: Callable[[ResourceRef], bool] | None = None,
+    not_evidence: Set[str] = frozenset(),
 ) -> list[str]:
     """Return every problem found. An empty list means the diagnosis stands.
 
     `tool_outputs` maps tool call ids to their complete stored output.
+    `not_evidence` holds the ids of calls that may not be cited at all, such
+    as a search of past incidents: that describes another incident.
     """
     problems: list[str] = []
     normalized = {call_id: _normalize(output) for call_id, output in tool_outputs.items()}
@@ -53,6 +56,12 @@ def validate(
             if item.tool_call_id not in normalized:
                 problems.append(
                     f"{where}: evidence cites {item.tool_call_id}, which does not exist"
+                )
+                continue
+            if item.tool_call_id in not_evidence:
+                problems.append(
+                    f"{where}: {item.tool_call_id} is about past incidents and cannot be "
+                    "evidence; cite an observation of this incident"
                 )
                 continue
             quote = _normalize(item.quote)

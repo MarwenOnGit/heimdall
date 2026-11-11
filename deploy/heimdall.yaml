@@ -66,6 +66,16 @@ spec:
             - {name: HEIMDALL_MODE, value: dry_run}
             - {name: HEIMDALL_ACTOR_TOKEN_FILE, value: /var/run/heimdall/actor/token}
             - {name: HEIMDALL_OPA_URL, value: "http://127.0.0.1:8181"}
+            # Signs approval tokens. Without it, actions that need approval
+            # are escalated instead.
+            - name: HEIMDALL_APPROVAL_SECRET
+              valueFrom:
+                secretKeyRef: {name: heimdall-approval-secret, key: secret}
+            # Optional chat webhook (Discord or Slack) for notifications:
+            #   kubectl -n heimdall create secret generic heimdall-webhook --from-literal=url=...
+            - name: HEIMDALL_WEBHOOK
+              valueFrom:
+                secretKeyRef: {name: heimdall-webhook, key: url, optional: true}
           readinessProbe:
             httpGet: {path: /healthz, port: http}
           livenessProbe:

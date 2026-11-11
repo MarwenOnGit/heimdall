@@ -9,6 +9,7 @@ from typing import Any
 
 from heimdall.agent.investigator import Investigation, Investigator
 from heimdall.agent.pipeline import Pipeline
+from heimdall.core.actions import ActionStore
 from heimdall.core.incidents import IncidentManager
 from heimdall.core.models import Incident, IncidentState, RootCauseCategory
 
@@ -76,7 +77,9 @@ class Worker:
         settle_seconds: float = 45,
         poll_seconds: float = 5,
         pipeline: Pipeline | None = None,
+        actions: ActionStore | None = None,
     ) -> None:
+        self._actions = actions
         self._manager = manager
         self._investigator = investigator
         self._conn = conn
@@ -110,6 +113,10 @@ class Worker:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
+                if self._pipeline is not None:
+                    self._pipeline.expire_approvals()
+                    if self._actions is not None:
+                        self._pipeline.reconcile_merged(self._actions)
                 if self.run_once() is None:
                     self._stop.wait(self._poll)
             except Exception:

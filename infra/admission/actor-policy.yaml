@@ -161,3 +161,47 @@ metadata:
 spec:
   policyName: heimdall-actor-scale
   validationActions: [Deny]
+---
+# The actor pauses and resumes Argo CD's automatic sync. That is all it may
+# change on the Application: not where it deploys from, not where it deploys
+# to, and it may never switch self-heal on (which would make Argo CD undo
+# Heimdall's own mitigations, or anything else, on its own).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: heimdall-actor-applications
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [argoproj.io]
+        apiVersions: ["*"]
+        operations: [UPDATE]
+        resources: [applications]
+  matchConditions:
+    - name: is-heimdall-actor
+      expression: request.userInfo.username == "system:serviceaccount:heimdall:heimdall-actor"
+  validations:
+    - message: Only the automated sync setting of the Application may change.
+      expression: >-
+        object.metadata.?labels == oldObject.metadata.?labels &&
+        object.metadata.?annotations == oldObject.metadata.?annotations &&
+        object.metadata.?finalizers == oldObject.metadata.?finalizers &&
+        object.spec.project == oldObject.spec.project &&
+        object.spec.?source == oldObject.spec.?source &&
+        object.spec.?sources == oldObject.spec.?sources &&
+        object.spec.destination == oldObject.spec.destination &&
+        object.spec.?ignoreDifferences == oldObject.spec.?ignoreDifferences &&
+        object.spec.?syncPolicy.?syncOptions == oldObject.spec.?syncPolicy.?syncOptions &&
+        object.?operation == oldObject.?operation
+    - message: Self-heal must stay off.
+      expression: >-
+        !object.spec.?syncPolicy.?automated.?selfHeal.orValue(false)
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: heimdall-actor-applications
+spec:
+  policyName: heimdall-actor-applications
+  validationActions: [Deny]

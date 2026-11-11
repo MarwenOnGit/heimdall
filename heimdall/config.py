@@ -24,6 +24,7 @@ class Config:
     kube_ca_file: Path | None
     namespaces: frozenset[str]
     # "off" disables the investigator: alerts are only grouped into incidents.
+    # Otherwise "ollama" (local) or "anthropic" (API).
     llm_provider: str
     llm_model: str
     ollama_url: str
@@ -31,11 +32,25 @@ class Config:
     settle_seconds: float
     max_tool_calls: int
     max_investigation_seconds: float
-    # observe: diagnose only. dry_run: also plan, check policy, and send each
-    # allowed action to the API server as a dry run. Live mode does not exist yet.
+    # observe: diagnose only.
+    # dry_run: also plan, check policy, and send each allowed action to the
+    #   API server as a dry run. Nothing changes.
+    # live: run allowed actions for real, verify each, undo what does not help.
     mode: str
+    approval_secret: str
+    webhook_url: str | None
+    public_url: str
+    verify_timeout_seconds: float
     actor_token_file: Path | None
     opa_url: str
+    # Off for the "without search" benchmark comparison.
+    search_past_incidents: bool = True
+    # Anthropic provider only. Effort: low, medium, high, xhigh or max.
+    llm_effort: str | None = None
+    llm_fallbacks: bool = True
+    # Benchmark only (scenario s15): JSON `{"proposals": [...]}` that replaces
+    # the planner. Policy, admission, verification and undo still apply.
+    forced_plan: str | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -43,6 +58,7 @@ class Config:
             value = os.environ.get(name)
             return Path(value) if value else None
 
+        provider = os.environ.get("HEIMDALL_LLM_PROVIDER", "off")
         return cls(
             alert_token=os.environ.get("HEIMDALL_ALERT_TOKEN", ""),
             db_path=Path(os.environ.get("HEIMDALL_DB", "heimdall.sqlite")),
@@ -72,8 +88,9 @@ class Config:
             namespaces=frozenset(
                 n for n in os.environ.get("HEIMDALL_NAMESPACES", "boutique").split(",") if n
             ),
-            llm_provider=os.environ.get("HEIMDALL_LLM_PROVIDER", "off"),
-            llm_model=os.environ.get("HEIMDALL_LLM_MODEL", "qwen3:8b"),
+            llm_provider=provider,
+            llm_model=os.environ.get("HEIMDALL_LLM_MODEL")
+            or ("claude-opus-5-5" if provider == "anthropic" else "qwen3:8b"),
             ollama_url=os.environ.get("HEIMDALL_OLLAMA_URL", "http://127.0.0.1:11434"),
             llm_context_tokens=int(os.environ.get("HEIMDALL_LLM_CONTEXT_TOKENS", "16384")),
             settle_seconds=float(os.environ.get("HEIMDALL_SETTLE_SECONDS", "45")),
@@ -82,6 +99,15 @@ class Config:
                 os.environ.get("HEIMDALL_MAX_INVESTIGATION_SECONDS", "240")
             ),
             mode=os.environ.get("HEIMDALL_MODE", "observe"),
+            approval_secret=os.environ.get("HEIMDALL_APPROVAL_SECRET", ""),
+            webhook_url=os.environ.get("HEIMDALL_WEBHOOK") or None,
+            public_url=os.environ.get("HEIMDALL_PUBLIC_URL", "http://localhost:8000"),
+            verify_timeout_seconds=float(os.environ.get("HEIMDALL_VERIFY_TIMEOUT_SECONDS", "300")),
             actor_token_file=path("HEIMDALL_ACTOR_TOKEN_FILE"),
             opa_url=os.environ.get("HEIMDALL_OPA_URL", "http://127.0.0.1:8181"),
+            search_past_incidents=os.environ.get("HEIMDALL_SEARCH_PAST_INCIDENTS", "true")
+            != "false",
+            llm_effort=os.environ.get("HEIMDALL_LLM_EFFORT") or None,
+            llm_fallbacks=os.environ.get("HEIMDALL_LLM_FALLBACKS", "true") != "false",
+            forced_plan=os.environ.get("HEIMDALL_FORCED_PLAN") or None,
         )
