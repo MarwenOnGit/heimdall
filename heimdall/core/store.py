@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS actions (
     decision        TEXT NOT NULL,
     status          TEXT NOT NULL,
     detail          TEXT NOT NULL,
+    previous_json   TEXT,
     created_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS actions_by_incident ON actions (incident_id);

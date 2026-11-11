@@ -269,3 +269,95 @@ def test_every_outcome_is_audited(executor: Executor, audit: AuditLog) -> None:
     assert [(e["status"], e["decision"], e["dry_run"]) for e in events] == [
         ("dry_run", "allow", True), ("denied", "deny", True)]  # fmt: skip
     assert audit.verify_chain() is None
+
+
+# --------------------------------------------------------------------- undo
+
+
+@pytest.fixture
+def live(kube: FakeKube, actions: ActionStore, audit: AuditLog) -> Executor:
+    return Executor(kube.client(), kube.client(), actions, audit, dry_run=False, clock=lambda: NOW)
+
+
+def test_previous_state_is_recorded_before_a_write(live: Executor, actions: ActionStore) -> None:
+    change = proposal("scale_deployment", replicas=3)
+
+    live.execute("inc_1", change, ALLOW, "100")
+
+    record = actions.find("inc_1", change)
+    assert record is not None
+    assert record.previous == {
+        "replicas": 1,
+        "containers": [{"name": "server", "image": "repo/frontend:v0.11.1",
+                        "limits": {"memory": "128Mi", "cpu": "200m"}}],
+    }  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("change", "restored"),
+    [
+        ({"kind": "scale_deployment", "replicas": 3}, {"spec": {"replicas": 1}}),
+        (
+            {"kind": "patch_resources", "container": "server", "limits": {"memory": "256Mi"}},
+            {"spec": {"template": {"spec": {"containers": [
+                {"name": "server", "resources": {"limits": {"memory": "128Mi", "cpu": "200m"}}}
+            ]}}}},
+        ),
+        (
+            {"kind": "rollback_deployment", "to_revision": 1},
+            {"spec": {"template": {"spec": {"containers": [
+                {"name": "server", "image": "repo/frontend:v0.11.1"}]}}}},
+        ),
+    ],
+)  # fmt: skip
+def test_undo_restores_what_the_action_changed(
+    live: Executor, kube: FakeKube, actions: ActionStore, change: dict, restored: dict
+) -> None:
+    action = proposal(**change)
+    live.execute("inc_1", action, ALLOW, "100")
+
+    outcome = live.undo("inc_1", action)
+
+    assert outcome.status is ActionStatus.UNDONE
+    assert kube.patches[-1]["body"] == restored
+    assert kube.patches[-1]["dry_run"] is False
+    found = actions.find("inc_1", action)
+    assert found is not None and found.status is ActionStatus.UNDONE
+
+
+def test_undone_actions_no_longer_count_as_writes(live: Executor, actions: ActionStore) -> None:
+    action = proposal("scale_deployment", replicas=3)
+    live.execute("inc_1", action, ALLOW, "100")
+    assert actions.writes_so_far("inc_1") == 1
+
+    live.undo("inc_1", action)
+
+    assert actions.writes_so_far("inc_1") == 0
+
+
+def test_undo_refused_by_the_api_server_is_reported(live: Executor, kube: FakeKube) -> None:
+    """For example scaling Redis back to 0, which the admission policy forbids."""
+    action = proposal("scale_deployment", name="redis-cart", replicas=1)
+    live.execute("inc_1", action, ALLOW, "100")
+    kube.reject_with = (422, "ValidatingAdmissionPolicy denied: replicas must be between 1 and 5")
+
+    outcome = live.undo("inc_1", action)
+
+    assert outcome.status is ActionStatus.FAILED
+    assert "undo refused" in outcome.detail
+
+
+def test_restart_and_unexecuted_actions_have_nothing_to_undo(
+    live: Executor, kube: FakeKube, audit: AuditLog
+) -> None:
+    restart = proposal("restart_deployment")
+    live.execute("inc_1", restart, ALLOW, "100")
+    writes = len(kube.patches)
+
+    assert live.undo("inc_1", restart).status is ActionStatus.UNDONE
+    assert live.undo("inc_1", proposal("scale_deployment", replicas=4)).status is (
+        ActionStatus.FAILED
+    )
+    assert len(kube.patches) == writes
+    # Only the attempt on an action that really ran is an audit event.
+    assert [e.event_type for e in audit.events("inc_1")].count("rollback") == 1
