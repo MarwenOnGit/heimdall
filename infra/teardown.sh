@@ -11,6 +11,8 @@ if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
   kind delete cluster --name "$CLUSTER_NAME"
 fi
 
+docker rm -f heimdall-ollama-bridge >/dev/null 2>&1 || true
+
 if docker inspect "$REGISTRY_NAME" >/dev/null 2>&1; then
   log "removing registry container"
   docker rm -f "$REGISTRY_NAME" >/dev/null

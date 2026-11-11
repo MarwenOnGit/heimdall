@@ -140,9 +140,11 @@ if ! k -n heimdall get secret heimdall-audit-key >/dev/null 2>&1; then
 fi
 "$ROOT/infra/gitea/bot.sh"
 HEIMDALL_IMAGE="$("$ROOT/deploy/build.sh")"
-export HEIMDALL_IMAGE
-# shellcheck disable=SC2016  # envsubst wants the literal variable name
-envsubst '${HEIMDALL_IMAGE}' <"$ROOT/deploy/heimdall.yaml" | k apply -f - >/dev/null
+HEIMDALL_LLM_PROVIDER="$("$ROOT/infra/ollama-bridge.sh")"
+export HEIMDALL_IMAGE HEIMDALL_LLM_PROVIDER
+# shellcheck disable=SC2016  # envsubst wants the literal variable names
+envsubst '${HEIMDALL_IMAGE} ${HEIMDALL_LLM_PROVIDER}' <"$ROOT/deploy/heimdall.yaml" |
+  k apply -f - >/dev/null
 k -n heimdall rollout status deploy/heimdall --timeout=180s >/dev/null
 
 log "environment ready"

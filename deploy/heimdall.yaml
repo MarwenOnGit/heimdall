@@ -1,4 +1,5 @@
-# Heimdall itself. ${HEIMDALL_IMAGE} is filled in by infra/bootstrap.sh.
+# Heimdall itself. ${HEIMDALL_IMAGE} and ${HEIMDALL_LLM_PROVIDER} are filled in
+# by infra/bootstrap.sh.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -26,9 +27,9 @@ spec:
     metadata:
       labels: {app.kubernetes.io/name: heimdall}
     spec:
-      # No Kubernetes API access yet; the two scoped identities are mounted
-      # explicitly when the investigator and executor are added.
-      automountServiceAccountToken: false
+      # The pod runs as the read-only identity, which is all the investigator
+      # needs. The actor identity is added separately with the executor.
+      serviceAccountName: heimdall-readonly
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -50,6 +51,13 @@ spec:
             - name: HEIMDALL_GITEA_TOKEN
               valueFrom:
                 secretKeyRef: {name: heimdall-gitea, key: token}
+            - {name: HEIMDALL_LOKI_URL, value: "http://loki.monitoring.svc:3100"}
+            - {name: HEIMDALL_NAMESPACES, value: boutique}
+            - {name: HEIMDALL_LLM_PROVIDER, value: "${HEIMDALL_LLM_PROVIDER}"}
+            - {name: HEIMDALL_LLM_MODEL, value: "qwen3:8b"}
+            - {name: HEIMDALL_OLLAMA_URL, value: "http://ollama.heimdall.svc:11434"}
+            # A local model is slow; give it more time than an API model needs.
+            - {name: HEIMDALL_MAX_INVESTIGATION_SECONDS, value: "600"}
           readinessProbe:
             httpGet: {path: /healthz, port: http}
           livenessProbe:
