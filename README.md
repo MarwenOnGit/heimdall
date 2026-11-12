@@ -219,8 +219,7 @@ with 7 tool calls. That is one run, not an accuracy figure.
   cluster. [NEXT_STEPS.md](NEXT_STEPS.md) lists what to check there, lightest
   first.
 - The benchmark has not been run with Heimdall: no accuracy, safety or cost
-  numbers for the agent. The single-shot baseline and the gate-off
-  counterfactual are not built.
+  numbers for the agent. The single-shot baseline is not built.
 - Postmortems contain no model-written summary; follow-ups are derived from
   the record ([why](docs/decisions.md)).
 - The Anthropic provider has never talked to the real API.

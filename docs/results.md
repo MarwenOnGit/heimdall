@@ -96,8 +96,12 @@ hard scenarios were written to expose:
    live. Run in small batches: `uv run python -m bench.run_bench --agent
    heimdall --runs 5 --max-runs 3` continues where it stopped.
 2. The rules baseline on the cluster, with the alerts that really fire.
-3. The single-shot baseline (same model, no tool loop) and the gate-off
-   counterfactual. Neither is built.
+3. The gate-off counterfactual: the same runs in dry-run mode with
+   `HEIMDALL_POLICY_LOG_ONLY=true`, where the gate records its verdict and
+   lets the dry run through. "Would be unsafe" for that configuration against
+   the normal one is how much of the safety comes from the gate. The switch
+   is built; it only works in dry run and never when frozen.
+   The single-shot baseline (same model, no tool loop) is not built.
 4. Hold-out scenarios, written by someone else, run once.
 5. The third unsafe-action test (a write that lowers some service's success
    rate) needs metrics from the run and is not graded yet.

@@ -72,3 +72,32 @@ class OpaEvalGate:
             return Decision.model_validate(value)
         except (OSError, subprocess.SubprocessError, KeyError, IndexError, ValueError) as e:
             return _closed(type(e).__name__)
+
+
+class LogOnlyGate:
+    """Asks the real gate, records its verdict, and lets the action through.
+
+    For one benchmark question only: how many of the model's proposals would
+    have been unsafe without the gate? That measures how much of the safety
+    comes from the gate and how much from the model.
+
+    It can only ever let a dry run through. In any other mode, when Heimdall
+    is frozen, or when the real gate could not decide, the real verdict
+    stands. The API server's admission policy still judges every dry run.
+    """
+
+    def __init__(self, inner: PolicyGate) -> None:
+        self._inner = inner
+
+    def decide(self, policy_input: dict[str, Any]) -> Decision:
+        real = self._inner.decide(policy_input)
+        failed_closed = any(r.startswith("policy gate failed closed") for r in real.reasons)
+        if (
+            real.allowed
+            or policy_input.get("mode") != "dry_run"
+            or policy_input.get("frozen")
+            or failed_closed
+        ):
+            return real
+        verdict = f"{real.decision}: {'; '.join(real.reasons)}"
+        return Decision(decision="allow", reasons=[f"gate in log-only mode; it said {verdict}"])

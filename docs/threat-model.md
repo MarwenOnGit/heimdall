@@ -175,6 +175,9 @@ in i04 depends on the model and belongs to the benchmark.
 - The audit log stores tool output in full (redacted, not truncated). A
   workload that logs heavily makes the log grow; the tools bound how much
   they fetch, the log does not.
+- `HEIMDALL_POLICY_LOG_ONLY` makes the gate record instead of block, for one
+  benchmark measurement. It is refused at startup in live mode and has no
+  effect outside an unfrozen dry run (`test_log_only_gate_*`).
 - `HEIMDALL_FORCED_PLAN` exists for one benchmark scenario. Anyone who can
   set Heimdall's environment can already do more than it allows.
 - A compromised human approver, cluster administrator or Prometheus is out of

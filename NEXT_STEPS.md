@@ -104,8 +104,9 @@ Then check, lightest first:
   `bench/metrics.py`, `bench/report.py`, and a rules baseline that is scored
   offline by `make results`. Missing: the runs themselves (many hours of
   cluster and model time, so it needs a plan that fits the laptop rule, or
-  the API provider and a budget), the single-shot baseline, the gate-off
-  counterfactual, and the unsafe-action test that needs run metrics. The
+  the API provider and a budget), the single-shot baseline, and the unsafe-action test that needs run metrics. The gate-off
+  counterfactual is a switch (`HEIMDALL_POLICY_LOG_ONLY=true`, dry run only)
+  plus `--config heimdall-dev-gate-off` on the runner. The
   runner's cluster path (`run_one`) has never been executed.
 - **The Anthropic provider has never called the real API.** No key is
   configured here. First real call: check that the request is accepted as
