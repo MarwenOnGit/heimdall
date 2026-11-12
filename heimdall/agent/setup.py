@@ -23,7 +23,7 @@ from heimdall.executor.verifier import Verifier
 from heimdall.llm.base import LLM
 from heimdall.llm.ollama import OllamaLLM
 from heimdall.notify.webhook import Notifier, NullNotifier, WebhookNotifier
-from heimdall.policy.gate import OpaHttpGate
+from heimdall.policy.gate import LogOnlyGate, OpaHttpGate, PolicyGate
 from heimdall.policy.input_builder import InputBuilder
 from heimdall.report.store import PostmortemStore
 from heimdall.tools.dependencies import DependencyGraph, DependencyTools
@@ -154,6 +154,12 @@ def build_pipeline(
         httpx.Client(base_url=config.prometheus_url, timeout=10),
         timeout_seconds=config.verify_timeout_seconds,
     )
+    gate: PolicyGate = OpaHttpGate(httpx.Client(base_url=config.opa_url, timeout=5))
+    if config.policy_log_only:
+        if live:
+            raise ValueError("HEIMDALL_POLICY_LOG_ONLY is only allowed in dry_run mode")
+        log.warning("HEIMDALL_POLICY_LOG_ONLY is set: the policy gate only records (benchmark)")
+        gate = LogOnlyGate(gate)
     planner: Planner | ForcedPlanner = Planner(llm, audit)
     if config.forced_plan:
         log.warning("HEIMDALL_FORCED_PLAN is set: the planner is bypassed (benchmark only)")
@@ -161,7 +167,7 @@ def build_pipeline(
     return Pipeline(
         planner,
         InputBuilder(reader, actions, mode=config.mode, gitops=gitops, revisions=revisions),
-        OpaHttpGate(httpx.Client(base_url=config.opa_url, timeout=5)),
+        gate,
         Executor(actor, reader, actions, audit, dry_run=not live, gitops=gitops),
         manager,
         audit,

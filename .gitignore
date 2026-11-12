@@ -20,6 +20,8 @@ htmlcov/
 *.key
 kubeconfig*
 bench/results/*.json
+# deterministic; regenerate with `make results`
+bench/results/*-offline/
 
 # superseded spec, kept locally only
 heimdall_v1.md

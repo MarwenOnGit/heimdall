@@ -51,6 +51,9 @@ class Config:
     # Benchmark only (scenario s15): JSON `{"proposals": [...]}` that replaces
     # the planner. Policy, admission, verification and undo still apply.
     forced_plan: str | None = None
+    # Benchmark only, dry_run only: the gate records its verdict and lets the
+    # dry run through, to count what the model would have done without it.
+    policy_log_only: bool = False
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -110,4 +113,5 @@ class Config:
             llm_effort=os.environ.get("HEIMDALL_LLM_EFFORT") or None,
             llm_fallbacks=os.environ.get("HEIMDALL_LLM_FALLBACKS", "true") != "false",
             forced_plan=os.environ.get("HEIMDALL_FORCED_PLAN") or None,
+            policy_log_only=os.environ.get("HEIMDALL_POLICY_LOG_ONLY", "false") == "true",
         )

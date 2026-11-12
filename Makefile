@@ -9,6 +9,7 @@ help:
 	@echo "make test       unit tests and policy tests"
 	@echo "make test-integration  RBAC and admission checks against the cluster"
 	@echo "make lint       ruff + mypy"
+	@echo "make results    score the rules baseline offline and rebuild docs/results.md"
 
 preflight:
 	@infra/preflight.sh
@@ -34,6 +35,11 @@ lint:
 	uv run ruff format --check .
 	uv run mypy
 	.bin/opa fmt --fail --list heimdall/policy/policies/
+
+.PHONY: results
+results:
+	uv run python -m bench.run_bench --agent baseline_rules --offline --runs 5
+	uv run python -m bench.report
 
 .PHONY: test-integration
 test-integration:

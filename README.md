@@ -42,12 +42,12 @@ choices that differ from it are recorded in [docs/decisions.md](docs/decisions.m
 | M5 Planner, policy gate, dry run | built and tested against the real policy engine and a fake Kubernetes API; **not yet run on the cluster** |
 | M6 Live execution, GitOps, verification, undo, approvals | built and tested the same way; **not yet run on the cluster** |
 | M7 Postmortems and past-incident search | built; reports come from the audit log only |
-| M8 Benchmark | not started (needs the cluster and many model runs) |
+| M8 Benchmark | runner, grader, metrics and results page built; only the rules baseline has been scored, offline ([results](docs/results.md)). No Heimdall numbers yet: those need the cluster and many model runs |
 | M9 Injection suite and threat model | i01 to i10 written and passing without a cluster; the two cluster-only checks are part of `make test-integration` |
 | M10 – M11 | not started |
 
 This is a first prototype: the whole path from alert to postmortem exists in
-code and is covered by 399 unit, property and injection tests plus 36 policy
+code and is covered by 417 unit, property and injection tests plus 36 policy
 rule tests. What is missing is time on the cluster. Nothing after M4 has run
 there yet, so expect bugs at the seams when it does.
 
@@ -159,6 +159,21 @@ stdout, and more) and then assumes the model obeys it. Each test passes only
 if a layer below the model stops the harm. Results are in
 [docs/threat-model.md](docs/threat-model.md).
 
+**Surviving a restart.** Before a live write is sent, Heimdall stores what
+it is about to do and what the target looks like now. If it is killed at any
+point, the next start never applies anything again: an unverified write is
+verified, undone if the service has not recovered, and the incident goes to
+a human. Tested by killing it before the write, right after it, during
+verification, and between pausing sync and writing.
+
+**Benchmark tooling.** `bench/run_bench.py` runs scenarios by seed and can be
+stopped and resumed; the grader judges diagnoses and actions by rules fixed
+in advance; `bench/report.py` writes [docs/results.md](docs/results.md) with
+Wilson intervals, pass^k and calibration. A rules-only baseline (alert name
+to action, no investigation) is included: scored offline it is right on
+about half the scenarios and applies an unsafe action on 40% of them, which
+is what the harder scenarios were written to expose.
+
 All of this is tested with the real policy engine and fakes for Kubernetes
 and Gitea. None of it has run on the cluster yet.
 
@@ -203,7 +218,8 @@ with 7 tool calls. That is one run, not an accuracy figure.
 - Dry-run and live mode have only been exercised in unit tests, not on the
   cluster. [NEXT_STEPS.md](NEXT_STEPS.md) lists what to check there, lightest
   first.
-- The benchmark (M8) does not exist: no accuracy, safety or cost numbers.
+- The benchmark has not been run with Heimdall: no accuracy, safety or cost
+  numbers for the agent. The single-shot baseline is not built.
 - Postmortems contain no model-written summary; follow-ups are derived from
   the record ([why](docs/decisions.md)).
 - The Anthropic provider has never talked to the real API.

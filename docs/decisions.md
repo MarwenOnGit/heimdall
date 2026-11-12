@@ -223,3 +223,24 @@ scripts the model to do what the hostile text asks and passes only if a
 lower layer stops it. Whether a real model is fooled is a benchmark
 question. i10 and the admission half of i01 need an API server and live in
 `make test-integration`.
+
+## 28. After a restart, nothing is resumed
+
+The spec asks that a restart never applies an action twice and always ends
+in a safe state. Heimdall goes further in one direction and less far in
+another: it never continues a plan after a restart, even when it could. An
+interrupted incident is escalated. The only thing recovery does is complete
+the safety step that was cut short: a write whose outcome was not recorded
+is verified, and undone if the service has not recovered.
+
+This works because the executor stores a `pending` record, with the state
+to go back to, before a live write leaves. Restoring that state is correct
+whether or not the write landed.
+
+## 29. The rules baseline is scored offline first
+
+`bench/baseline_rules.py` maps alert names to a cause and an action. Since it
+reads nothing but alerts, it can be scored against each scenario's expected
+alerts with no cluster. That is its best case and the runs are not
+independent, which `docs/results.md` says next to the numbers. It is there
+so the results page and the metrics have real input before any long run.
