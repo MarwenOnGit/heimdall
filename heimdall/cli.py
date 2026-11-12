@@ -75,12 +75,22 @@ def _manager(args: argparse.Namespace) -> tuple[IncidentManager, AuditLog]:
 def cmd_incident_list(args: argparse.Namespace) -> int:
     manager, log = _manager(args)
     if args.json:
+        actions = ActionStore(connect(args.db or Config.from_env().db_path))
         out = []
         for incident in manager.all():
             diagnoses = [e.payload for e in log.events(incident.id) if e.event_type == "diagnosis"]
             out.append(
-                {**incident.model_dump(mode="json"), "result": diagnoses[-1] if diagnoses else None}
-            )
+                {
+                    **incident.model_dump(mode="json"),
+                    "result": diagnoses[-1] if diagnoses else None,
+                    # What was done, for the benchmark's grader.
+                    "actions": [
+                        {"type": a.type, "name": a.name, "decision": a.decision,
+                         "status": a.status}
+                        for a in actions.for_incident(incident.id)
+                    ],
+                }
+            )  # fmt: skip
         print(json.dumps(out))
         return 0
     for incident in manager.all():

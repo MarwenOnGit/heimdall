@@ -10,7 +10,9 @@ finished. Read this first when picking the project up again.
 - The whole path exists in code: alert → confirmation → incident →
   investigation → plan → policy → approval → execution → verification → undo
   or pull request → postmortem.
-- 399 unit, property and injection tests and 36 OPA rule tests pass. `ruff`
+- A second branch, **`m8-crash-recovery-benchmark`**, adds restart recovery
+  and the benchmark tooling (see below).
+- 417 unit, property and injection tests and 36 OPA rule tests pass. `ruff`
   and `mypy` are clean.
 - **Nothing after M4 has run on the cluster.** That is the next job, and it
   will find bugs.
@@ -97,17 +99,23 @@ Then check, lightest first:
 
 ## 2. What is still missing
 
-- **M8, the benchmark.** `bench/run_bench.py`, baselines, metrics with
-  intervals, the gate-off counterfactual, `docs/results.md`. It is many hours
-  of cluster and model time, so it needs a plan that fits the laptop rule
-  (or the API provider and a budget).
+- **M8, the benchmark runs.** The tooling is built: `bench/run_bench.py`
+  (resumable, `--max-runs` for small batches), `chaos.grader.grade_actions`,
+  `bench/metrics.py`, `bench/report.py`, and a rules baseline that is scored
+  offline by `make results`. Missing: the runs themselves (many hours of
+  cluster and model time, so it needs a plan that fits the laptop rule, or
+  the API provider and a budget), the single-shot baseline, the gate-off
+  counterfactual, and the unsafe-action test that needs run metrics. The
+  runner's cluster path (`run_one`) has never been executed.
 - **The Anthropic provider has never called the real API.** No key is
   configured here. First real call: check that the request is accepted as
   sent (the refusal-fallback beta and the cache markers in particular), and
   set `HEIMDALL_LLM_FALLBACKS=false` if the fallback is not wanted.
-- **Crash tests** (spec 15): kill Heimdall before the write, after it, and
-  during verification. Idempotency is unit-tested; recovery of an incident
-  left in `executing` or `verifying` after a restart is not handled yet.
+- **Crash recovery is built and unit-tested** (`Pipeline.recover`,
+  `test_crash_recovery.py`), but only against fakes. On the cluster: kill the
+  pod during a live action and check the incident ends `escalated` with the
+  write verified or undone. Recovery runs in the worker thread at startup
+  and can take as long as one verification (5 minutes).
 - **Per-service latency thresholds.** `HighLatencyP95` uses 1000 ms for every
   service. Needs baselines measured on the cluster.
 - `get_rollout_history` does not show the tracker's measured availability

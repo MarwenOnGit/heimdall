@@ -55,10 +55,11 @@ select = ["E", "F", "I", "UP", "B", "SIM", "S"]
 "tests/**" = ["S101"]
 # The chaos runner shells out to kubectl and docker with fixed arguments.
 "chaos/**" = ["S603", "S607"]
+"bench/**" = ["S603", "S607"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["heimdall", "chaos"]
+files = ["heimdall", "chaos", "bench"]
 warn_unused_ignores = true
 warn_redundant_casts = true
 

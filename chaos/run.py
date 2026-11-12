@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from chaos import cluster
-from chaos.grader import grade
+from chaos.grader import grade, grade_actions
 from chaos.model import GitCommit, Kubectl, Manifest, PauseNode, Scenario, Step, Wait, load_all
 from chaos.params import sample
 
@@ -181,6 +181,11 @@ def run(
             ]
             result["incidents"] = incidents
             result["grade"] = grade(result["ground_truth"], {"root_causes": causes})
+            result["action_grade"] = grade_actions(
+                result["ground_truth"],
+                result["acceptable_fixes"],
+                [action for i in incidents for action in i.get("actions", [])],
+            )
             result["grade"]["incidents"] = len(incidents)
             result["grade"]["finished"] = bool(incidents) and all(
                 i["state"] in FINISHED_STATES for i in incidents
