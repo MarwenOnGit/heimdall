@@ -19,6 +19,169 @@ and unit-tested; see [Status](#status) for what has also run on the cluster.
   <img alt="From alert to verified action" src="docs/img/pipeline.png">
 </picture>
 
+The path has three parts, each described below with its own diagram:
+**detection** (is something really wrong, and which incident does it belong
+to), **diagnosis** (what is the root cause, with proof), and **remediation**
+(what may be done about it, and was it the right thing).
+
+Heimdall runs in one of three modes. `observe` stops after the diagnosis.
+`dry_run`, the default, plans and checks every action and sends it to the API
+server as a server-side dry run, so the admission policy is exercised but
+nothing changes. `live` applies allowed actions for real.
+
+### Detection and diagnosis
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/detection-dark.png">
+  <img alt="Detection and diagnosis" src="docs/img/detection.png">
+</picture>
+
+1. **Alert.** Prometheus evaluates eleven alert rules (crash loops, pods not
+   ready, OOM kills, image pull failures, error rate and p95 latency from the
+   Linkerd mesh, CPU throttling, full volumes, unready nodes). Alertmanager
+   sends the firing ones to Heimdall's webhook. Rule annotations never
+   template in values a workload controls, because the model reads them.
+2. **Ingest.** The webhook needs a bearer token, and a NetworkPolicy lets only
+   Alertmanager and Prometheus connect. The raw alert is stored and the call
+   returns 202 at once; everything after this runs in a worker.
+3. **Confirm.** Heimdall asks Prometheus itself whether `ALERTS` shows that
+   alert firing with the same labels. If not, the alert is recorded as
+   `alert_unconfirmed` and goes no further. A forged payload cannot create an
+   incident, even with a stolen token.
+4. **Correlate.** Alerts in the same namespace are grouped into one incident
+   when they concern the same service or services connected in
+   [docs/dependencies.yaml](docs/dependencies.yaml), within five minutes. A
+   Redis outage that makes the cart and the frontend fail is one incident,
+   not three. An alert that fires and clears more than three times in 15
+   minutes is marked flapping.
+5. **Investigate.** Before the model is involved, Heimdall collects a fixed
+   first look: pods of the affected services, namespace events, git and Argo
+   CD changes of the last 15 minutes, and the health of upstream
+   dependencies. The model then works in a loop: it states its hypotheses
+   with a probability for each, picks the one tool call that best separates
+   them, reads the result, and repeats, for at most 15 calls and 4 minutes.
+   It has 14 tools, all read-only (pods, events, logs, LogQL, PromQL,
+   deployments, rollout history and diffs, commits, nodes, dependencies, past
+   incidents), and uses an identity that cannot write or read secrets.
+6. **Sanitize.** Every tool result is stored in full in the audit log. The
+   copy the model sees is truncated, stripped of secrets (token formats and
+   high-entropy strings become `[redacted:...]`), cleaned of control
+   characters, and wrapped in a block with a random boundary that marks it as
+   untrusted data. Free-form PromQL and LogQL are parsed, and rejected unless
+   every selector stays in the allowed namespace.
+7. **Evidence check.** The model ends with a structured diagnosis: a root
+   cause category, the resource to fix, a confidence, the hypotheses it ruled
+   out, and evidence. Each piece of evidence must cite a real tool call and
+   quote text that appears verbatim in that call's stored output, and each
+   root cause needs two pieces from different calls. A diagnosis that fails
+   gets one chance to be repaired. After that the incident is escalated with
+   cause `unknown`, which is safe. A wrong answer would not be.
+
+### Remediation, verification and undo
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/remediation-dark.png">
+  <img alt="Remediation, verification and undo" src="docs/img/remediation.png">
+</picture>
+
+1. **Plan.** The model chooses actions from a fixed catalog of eight:
+   restart, roll back, scale, change resources, open a pull request,
+   escalate, do nothing (and pause GitOps sync, which only the executor may
+   add). Code then drops any action that cannot fix the diagnosed kind of
+   cause, targets a resource not named in the diagnosis, or comes from a
+   diagnosis below 0.8 confidence. There is no shell, no generic `kubectl`
+   and no delete.
+2. **Policy gate.** For each proposal Heimdall builds the policy input itself,
+   from the live cluster and its own action record, never from model text.
+   OPA answers allow, needs approval, or deny. Among the rules: nothing outside
+   the namespace or the diagnosis's blast radius, at most three writes per
+   incident, never the same action on the same object twice in ten minutes,
+   replicas between 1 and 5, limits at most doubled, rollbacks only to a
+   revision that was healthy for ten minutes, and nothing at all while
+   `heimdall freeze` is on. If OPA cannot be reached, the answer is deny.
+3. **Approval.** Actions that need a human (scaling Redis, for example) go to
+   a chat webhook with a link. The token is an HMAC over the exact action and
+   the version of the object it was computed for. It works once and expires
+   after 15 minutes. After approval the policy runs again on fresh state, so
+   a stale approval cannot authorize a changed situation.
+4. **Execute.** The executor takes a lock on the Deployment, saves its
+   current state, and sends the patch with the actor identity and a
+   `resourceVersion` precondition: if anything changed since the policy
+   check, the API server refuses the write. A rollback or resource change
+   makes the cluster differ from git, so Argo CD's automatic sync is paused
+   first (otherwise the next sync would put the broken state back). Without a
+   successful pause, there is no write.
+5. **API server.** RBAC lets the actor identity patch Deployments in one
+   namespace and nothing else. A ValidatingAdmissionPolicy then checks the
+   patch itself: commands, env, volumes, probes and security settings must be
+   unchanged, every image must be one already deployed from git, and replicas
+   and limits must be in bounds. These two checks hold even if Heimdall's own
+   code is compromised.
+6. **Verify.** Recovery is measured directly with PromQL and pod readiness,
+   not with alert state, which lags. Heimdall polls for up to five minutes.
+7. **Undo.** A fix that did not help is reverted from the saved state,
+   through the same restricted identity and the same admission checks, and
+   the incident goes to a human. If Heimdall is killed in the middle of an
+   action, the next start finds the unfinished write, verifies it, undoes it
+   if the service has not recovered, and escalates. It never applies it twice.
+8. **Reconcile git.** After a drift-creating fix, Heimdall opens a pull
+   request in Gitea that reverts the offending commit. The incident stays
+   `mitigated` until a human merges it. Heimdall then sees the merge, resumes
+   sync and marks the incident `resolved`. Heimdall never merges.
+9. **Report.** When the incident closes, a postmortem is built from the audit
+   log alone: timeline, root cause, quoted evidence, ruled-out hypotheses,
+   every action with its policy decision, admission result and verification,
+   the pull request, and the cost.
+
+### Incident lifecycle
+
+Every incident is a durable state machine in SQLite. Each transition is an
+audit event, and an illegal transition is refused in code.
+
+```mermaid
+stateDiagram-v2
+    [*] --> open
+    open --> investigating
+    investigating --> diagnosed
+    investigating --> open: restart during investigation
+    diagnosed --> planning
+    planning --> awaiting_approval
+    planning --> executing
+    awaiting_approval --> executing
+    executing --> verifying
+    executing --> rolled_back
+    verifying --> mitigated: recovered, pull request open
+    verifying --> resolved: recovered, no drift
+    verifying --> rolled_back: not recovered, undone
+    verifying --> planning: next action
+    mitigated --> resolved: pull request merged
+    rolled_back --> escalated
+    resolved --> [*]
+    escalated --> [*]
+```
+
+Every non-final state can also go to `escalated` or `failed` (not drawn).
+`diagnosed` and `planning` can end directly in `resolved` when the right
+answer is to do nothing.
+
+### Safety layers
+
+Each layer works even if the ones above it fail. The last column is what
+matters when the model, or Heimdall itself, misbehaves.
+
+| Layer | Enforced by | Holds if Heimdall is compromised? |
+|---|---|---|
+| Alert confirmation against Prometheus | Heimdall | no |
+| Evidence must quote real tool output | Heimdall | no |
+| Catalog-only actions, blast radius | Heimdall | no |
+| Policy gate | OPA sidecar | no |
+| Approval tokens bound to one action | Heimdall (HMAC) | no |
+| Verification and undo | Heimdall | no |
+| RBAC: patch Deployments in one namespace | Kubernetes API server | yes |
+| Admission policy on the patch contents | Kubernetes API server | yes |
+| Argo CD project limits | Argo CD | yes |
+| Signed audit checkpoints outside the database | Gitea repo + webhook | yes (tampering is detectable) |
+
 ## Lab environment
 
 Everything runs in one kind cluster on a laptop, built by `make up`.
@@ -226,6 +389,46 @@ with 7 tool calls. That is one run, not an accuracy figure.
 - The hold-out scenarios are deliberately not written by the author
   ([why](docs/decisions.md)).
 - `HighLatencyP95` uses one threshold for every service.
+
+## Roadmap
+
+The prototype shows that the whole path can be built so that safety holds
+without trusting the model. What it does not show yet is how well it works.
+The next steps, in order:
+
+**1. Run it on the cluster.** Everything after the investigator has only met
+fakes. Work through [NEXT_STEPS.md](NEXT_STEPS.md), lightest first: the
+integration tests (including the Argo CD admission policy, never applied
+yet), the pod with its OPA sidecar, one scenario without the model, one in
+dry run, then live mode on s04 and s15, then a pod kill in the middle of a
+live action. Verify the scenarios that have never run (s10, s13 to s16) and
+re-run the ones that changed.
+
+**2. Measure it (M8).** Run the benchmark in small, resumable batches:
+diagnosis accuracy with confidence intervals, fix success, unsafe action
+rate, correct abstention, pass^k, calibration, time to diagnosis and cost per
+incident. Add the single-shot baseline (same model, no tool loop) to show
+whether the loop matters. Run the gate-off counterfactual to measure how much
+safety comes from the policy gate rather than the model. Have someone else
+write the hold-out scenarios, so the results are not tuned to the test.
+
+**3. Make it better.**
+- More model choices: an OpenAI-compatible provider, so hosted open-weight
+  models (including free tiers) can stand in for the laptop GPU, and a first
+  real call through the Anthropic provider.
+- Per-service latency thresholds, from baselines measured on the cluster.
+- Show the revision tracker's measured health in `get_rollout_history`, so
+  the model sees which revisions actually worked, not only the policy.
+- Use the calibration results to tune the 0.8 confidence threshold and the
+  investigator prompt.
+
+**4. Compare it (M10, stretch).** Diagnosis accuracy against an existing
+open-source tool (k8sgpt or HolmesGPT, read-only), ablations (with and
+without past-incident search, without the "look upstream" instruction), a
+local model against an API model, and a human on the same scenarios.
+
+**5. Present it (M11).** Diagrams for the incident state machine and the
+safety layers, a three-minute demo video, and a blog post.
 
 ## Quickstart
 
