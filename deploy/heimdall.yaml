@@ -1,5 +1,6 @@
-# Heimdall itself. ${HEIMDALL_IMAGE}, ${HEIMDALL_LLM_PROVIDER}, ${OPA_IMAGE} and
-# ${HEIMDALL_POLICY_HASH} are filled in by infra/bootstrap.sh.
+# Heimdall itself. ${HEIMDALL_IMAGE}, ${HEIMDALL_LLM_PROVIDER},
+# ${HEIMDALL_LLM_MODEL}, ${OPA_IMAGE} and ${HEIMDALL_POLICY_HASH} are filled in
+# by infra/bootstrap.sh.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -57,9 +58,21 @@ spec:
             - {name: HEIMDALL_LOKI_URL, value: "http://loki.monitoring.svc:3100"}
             - {name: HEIMDALL_NAMESPACES, value: boutique}
             - {name: HEIMDALL_LLM_PROVIDER, value: "${HEIMDALL_LLM_PROVIDER}"}
-            - {name: HEIMDALL_LLM_MODEL, value: "qwen3:8b"}
+            - {name: HEIMDALL_LLM_MODEL, value: "${HEIMDALL_LLM_MODEL}"}
+            # Only used by the "openai" provider (a hosted API). The Secret is
+            # created by infra/llm-api.sh; without it these stay unset.
+            - name: HEIMDALL_LLM_BASE_URL
+              valueFrom:
+                secretKeyRef: {name: heimdall-llm, key: base_url, optional: true}
+            - name: HEIMDALL_LLM_API_KEY
+              valueFrom:
+                secretKeyRef: {name: heimdall-llm, key: api_key, optional: true}
+            - name: HEIMDALL_LLM_MIN_INTERVAL_SECONDS
+              valueFrom:
+                secretKeyRef: {name: heimdall-llm, key: min_interval_seconds, optional: true}
             - {name: HEIMDALL_OLLAMA_URL, value: "http://ollama.heimdall.svc:11434"}
-            # A local model is slow; give it more time than an API model needs.
+            # A local model is slow, and a free API tier makes Heimdall wait
+            # between requests; give both more time than a paid API needs.
             - {name: HEIMDALL_MAX_INVESTIGATION_SECONDS, value: "600"}
             # dry_run: plan, check policy, and send allowed actions to the API
             # server as dry runs. Nothing in the cluster is changed.

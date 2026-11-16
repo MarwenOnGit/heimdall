@@ -78,7 +78,16 @@ def cmd_incident_list(args: argparse.Namespace) -> int:
         actions = ActionStore(connect(args.db or Config.from_env().db_path))
         out = []
         for incident in manager.all():
-            diagnoses = [e.payload for e in log.events(incident.id) if e.event_type == "diagnosis"]
+            events = list(log.events(incident.id))
+            diagnoses = [e.payload for e in events if e.event_type == "diagnosis"]
+            # When each write reached the cluster, for the grader's metric check.
+            executed_at: dict[tuple[str, str | None], str] = {}
+            for e in events:
+                if e.event_type == "action_executed" and e.payload.get("status") == "executed":
+                    proposal = e.payload.get("proposal", {})
+                    executed_at.setdefault(
+                        (proposal.get("type"), proposal.get("name")), e.timestamp
+                    )
             out.append(
                 {
                     **incident.model_dump(mode="json"),
@@ -86,7 +95,7 @@ def cmd_incident_list(args: argparse.Namespace) -> int:
                     # What was done, for the benchmark's grader.
                     "actions": [
                         {"type": a.type, "name": a.name, "decision": a.decision,
-                         "status": a.status}
+                         "status": a.status, "executed_at": executed_at.get((a.type, a.name))}
                         for a in actions.for_incident(incident.id)
                     ],
                 }

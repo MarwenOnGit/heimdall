@@ -149,7 +149,10 @@ class KubernetesTools:
         client: KubeClient,
         allowed_namespaces: set[str],
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        availability: Callable[[str, str], dict[int, float]] | None = None,
     ) -> None:
+        # Measured minutes each revision was Available (the revision tracker).
+        self._availability = availability
         self._kube = client
         self._allowed = allowed_namespaces
         self._clock = clock
@@ -355,16 +358,26 @@ class KubernetesTools:
         if not revisions:
             return "no revisions found"
         current = max(revisions)
+        measured = self._availability(ns, args.name) if self._availability else None
+        first_measured = min(measured, default=None) if measured is not None else None
         lines = []
         for revision in sorted(revisions):
             rs = revisions[revision]
             images = ",".join(c["image"] for c in rs["spec"]["template"]["spec"]["containers"])
-            lines.append(
+            line = (
                 f"revision={revision}{' (current)' if revision == current else ''} "
                 f"created={rs['metadata']['creationTimestamp']} image={images} "
                 f"replicas={rs['spec'].get('replicas', 0)} "
                 f"ready={rs.get('status', {}).get('readyReplicas', 0)}"
             )
+            if measured is not None:
+                # The same reading the policy uses for rollback targets: a
+                # revision that appeared while Heimdall was watching and was
+                # never seen healthy counts as 0; older ones were not measured.
+                watched = first_measured is not None and revision >= first_measured
+                minutes = measured.get(revision, 0.0) if watched else "not_measured"
+                line += f" healthy_minutes_observed={minutes}"
+            lines.append(line)
         return "\n".join(lines)
 
     def diff_revisions(self, args: DiffArgs) -> str:
@@ -441,8 +454,9 @@ class KubernetesTools:
                  EventsArgs, self.get_events),
             Tool("get_deployment", "Show a Deployment: replica counts, current revision, images, "
                  "resources and conditions.", DeploymentArgs, self.get_deployment),
-            Tool("get_rollout_history", "List the revisions of a Deployment with their images "
-                 "and creation times.", DeploymentArgs, self.get_rollout_history),
+            Tool("get_rollout_history", "List the revisions of a Deployment with their images, "
+                 "creation times and how long each was observed healthy.", DeploymentArgs,
+                 self.get_rollout_history),
             Tool("diff_revisions", "Show what changed in the pod template between two revisions "
                  "of a Deployment. Env var values are masked.", DiffArgs, self.diff_revisions),
             Tool("get_node_status", "Show every node: readiness, pressure conditions and "

@@ -10,13 +10,12 @@ model as an instruction instead, and the callers' own validation and retry
 do the enforcing, as they do for every provider.
 """
 
-import json
 import time
 from typing import Any
 
 import anthropic
 
-from heimdall.llm.base import LLMError, Message, Response
+from heimdall.llm.base import LLMError, Message, Response, extract_json, schema_instruction
 
 DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -45,21 +44,6 @@ def estimate_cost(model: str, fresh: int, cache_read: int, cache_write: int, out
     return round(total / 1_000_000, 6)
 
 
-def extract_json(text: str) -> str:
-    """The JSON object in a reply, without a code fence or words around it."""
-    start, end = text.find("{"), text.rfind("}")
-    return text[start : end + 1] if 0 <= start < end else text.strip()
-
-
-def _schema_instruction(schema: dict[str, Any]) -> str:
-    # Sorted keys: the same schema must always produce the same bytes, or the
-    # prompt cache would miss on every call.
-    return (
-        "Reply with exactly one JSON object and nothing else: no prose, no code fence. "
-        "It must be valid against this JSON Schema:\n" + json.dumps(schema, sort_keys=True)
-    )
-
-
 class AnthropicLLM:
     def __init__(
         self,
@@ -85,7 +69,7 @@ class AnthropicLLM:
             {"type": "text", "text": m.content} for m in messages if m.role == "system"
         ]
         if response_schema is not None:
-            system.append({"type": "text", "text": _schema_instruction(response_schema)})
+            system.append({"type": "text", "text": schema_instruction(response_schema)})
         if system:
             # Everything up to here is the same for every call of an
             # investigation and across investigations.

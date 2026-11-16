@@ -205,12 +205,12 @@ choices that differ from it are recorded in [docs/decisions.md](docs/decisions.m
 | M5 Planner, policy gate, dry run | built and tested against the real policy engine and a fake Kubernetes API; **not yet run on the cluster** |
 | M6 Live execution, GitOps, verification, undo, approvals | built and tested the same way; **not yet run on the cluster** |
 | M7 Postmortems and past-incident search | built; reports come from the audit log only |
-| M8 Benchmark | runner, grader, metrics and results page built; only the rules baseline has been scored, offline ([results](docs/results.md)). No Heimdall numbers yet: those need the cluster and many model runs |
+| M8 Benchmark | runner, grader (all three unsafe-action tests), metrics, results page, and the single-shot, gate-off and no-search comparison runs are built; only the rules baseline has been scored, offline ([results](docs/results.md)). No Heimdall numbers yet: those need the cluster and many model runs |
 | M9 Injection suite and threat model | i01 to i10 written and passing without a cluster; the two cluster-only checks are part of `make test-integration` |
 | M10 – M11 | not started |
 
 This is a first prototype: the whole path from alert to postmortem exists in
-code and is covered by 417 unit, property and injection tests plus 36 policy
+code and is covered by 446 unit, property and injection tests plus 36 policy
 rule tests. What is missing is time on the cluster. Nothing after M4 has run
 there yet, so expect bugs at the seams when it does.
 
@@ -254,9 +254,14 @@ tool call's output; otherwise it is rejected and, if the model cannot repair
 it, the incident is escalated as unknown.
 
 The model runs locally through Ollama (`qwen3:8b` on a laptop GPU), with no
-cloud dependency. Claude through the Anthropic API is the second provider
-(`HEIMDALL_LLM_PROVIDER=anthropic`); it is tested against a fake client only,
-because no API key has been used with it yet.
+cloud dependency. Two hosted providers exist as well: Claude through the
+Anthropic API (`HEIMDALL_LLM_PROVIDER=anthropic`), and any API that speaks
+the OpenAI chat-completions protocol (`openai`: Gemini, OpenRouter, Groq,
+Mistral and others, chosen by base URL and model). The second one waits when
+a free tier rate-limits it, so a benchmark can run without the laptop GPU:
+`infra/llm-api.sh` stores the key in a cluster Secret and `make up` switches
+over. Both hosted providers are tested against fakes only; no API key has
+been used with either yet.
 
 **Planning, policy and dry run.** After a diagnosis, the planner lets the
 model choose actions, but only action types that can fix the diagnosed kind
@@ -382,10 +387,12 @@ with 7 tool calls. That is one run, not an accuracy figure.
   cluster. [NEXT_STEPS.md](NEXT_STEPS.md) lists what to check there, lightest
   first.
 - The benchmark has not been run with Heimdall: no accuracy, safety or cost
-  numbers for the agent. The single-shot baseline is not built.
+  numbers for the agent. The comparison runs (single-shot, gate-off,
+  no-search) are switches that have never been used on the cluster.
 - Postmortems contain no model-written summary; follow-ups are derived from
   the record ([why](docs/decisions.md)).
-- The Anthropic provider has never talked to the real API.
+- Neither hosted provider (Anthropic, OpenAI-compatible) has talked to a real
+  API.
 - The hold-out scenarios are deliberately not written by the author
   ([why](docs/decisions.md)).
 - `HighLatencyP95` uses one threshold for every service.
@@ -407,18 +414,17 @@ re-run the ones that changed.
 **2. Measure it (M8).** Run the benchmark in small, resumable batches:
 diagnosis accuracy with confidence intervals, fix success, unsafe action
 rate, correct abstention, pass^k, calibration, time to diagnosis and cost per
-incident. Add the single-shot baseline (same model, no tool loop) to show
-whether the loop matters. Run the gate-off counterfactual to measure how much
-safety comes from the policy gate rather than the model. Have someone else
+incident. Run the single-shot baseline (same model, no tool loop) to show
+whether the loop matters, and the gate-off counterfactual to measure how much
+safety comes from the policy gate rather than the model
+(`bench.run_bench --variant single-shot`, `--variant gate-off`). A hosted
+model on a free tier keeps the laptop GPU out of it. Have someone else
 write the hold-out scenarios, so the results are not tuned to the test.
 
 **3. Make it better.**
-- More model choices: an OpenAI-compatible provider, so hosted open-weight
-  models (including free tiers) can stand in for the laptop GPU, and a first
-  real call through the Anthropic provider.
+- A first real call through each hosted provider, and a comparison of the
+  models that free tiers offer.
 - Per-service latency thresholds, from baselines measured on the cluster.
-- Show the revision tracker's measured health in `get_rollout_history`, so
-  the model sees which revisions actually worked, not only the policy.
 - Use the calibration results to tune the 0.8 confidence threshold and the
   investigator prompt.
 
@@ -455,9 +461,19 @@ uv run python -m chaos.run s05 --seed 1 --agent   # inject one fault and grade t
 uv run python -m chaos.suite --runs 3 --agent     # every scenario, three seeds each
 ```
 
+To use a hosted model instead of the local one (any OpenAI-compatible API;
+the key is read from the environment and kept in a cluster Secret):
+
+```sh
+HEIMDALL_LLM_API_KEY=... infra/llm-api.sh <base-url> <model> [seconds-between-requests]
+make up                         # switches Heimdall over
+infra/llm-api.sh --remove       # and `make up` again to go back
+```
+
 A warning about load: the cluster, the workload's load generator and a local
 model on the GPU together push a laptop hard, and the suite runs for hours.
-Run single scenarios, or small batches, and watch the temperature.
+Run single scenarios, or small batches, and watch the temperature. A hosted
+model takes the GPU out of it; the cluster still runs on the machine.
 
 Every tool, image and chart version is pinned in
 [infra/versions.env](infra/versions.env).

@@ -1,18 +1,19 @@
 # Next steps
 
-Handover note, rewritten on 2026-11-12 after the first prototype was
-finished. Read this first when picking the project up again.
+Handover note, last updated on 2026-11-16. Read this first when picking the
+project up again.
 
 ## Where things stand
 
-- `main` has M1 to M5. Branch **`m6-prototype`** adds M6, M7, M9 and the
-  remaining code items, and has an open pull request.
+- `main` has M1 to M7, M9, restart recovery and the benchmark tooling.
+  Branch **`m8-api-provider-baselines`** adds everything in "What was added
+  last" below and has an open pull request.
 - The whole path exists in code: alert → confirmation → incident →
   investigation → plan → policy → approval → execution → verification → undo
   or pull request → postmortem.
-- A second branch, **`m8-crash-recovery-benchmark`**, adds restart recovery
-  and the benchmark tooling (see below).
-- 417 unit, property and injection tests and 36 OPA rule tests pass. `ruff`
+- **Every item that can be done without the cluster is done.** What is left
+  is running it (section 1) and measuring it (section 2).
+- 446 unit, property and injection tests and 36 OPA rule tests pass. `ruff`
   and `mypy` are clean.
 - **Nothing after M4 has run on the cluster.** That is the next job, and it
   will find bugs.
@@ -29,7 +30,19 @@ finished. Read this first when picking the project up again.
   pipeline diagram is `docs/img/pipeline-src.html` (icons and fonts are
   inlined by the skill's `build.py`, then `render_png.py` writes both PNGs).
 
-## What was added last (2026-11-12)
+## What was added last (2026-11-16)
+
+| Item | Where | Tested how |
+|---|---|---|
+| OpenAI-compatible provider (Gemini, OpenRouter, Groq, ...) that waits on rate limits | `heimdall/llm/openai_compat.py`, `HEIMDALL_LLM_PROVIDER=openai` | `test_openai_llm.py`, fake API only |
+| Hosted model on the cluster: key in a Secret, `make up` switches over | `infra/llm-api.sh`, `infra/bootstrap.sh`, `deploy/heimdall.yaml` | **not run**; `shellcheck` runs in CI only |
+| Single-shot baseline | `HEIMDALL_SINGLE_SHOT`, `Investigator(single_shot=True)` | `test_investigator.py` |
+| Comparison runs: `--variant gate-off`, `single-shot`, `no-search` | `bench/run_bench.py` | `test_bench.py`, fake kubectl |
+| Third unsafe-action test (a write lowers a success rate by more than 2 points) | `chaos/grader.py`, `chaos/run.py::write_drops`, `executed_at` in `incident list --json` | `test_bench.py`, `test_incidents.py` |
+| `get_rollout_history` shows measured healthy minutes | `heimdall/tools/k8s.py` | `test_k8s_tools.py` |
+| Decisions 30 to 32, threat model, README | `docs/` | |
+
+## Added before (2026-11-12)
 
 | Item | Where | Tested how |
 |---|---|---|
@@ -55,6 +68,22 @@ docker start heimdall-registry heimdall-control-plane heimdall-worker heimdall-w
 make up && make reset     # a fault may still be injected from a killed batch
 deploy/build.sh           # the image must be rebuilt: new code and a new dependency
 ```
+
+To keep the GPU out of it, configure a hosted model **before** `make up`
+(the namespace must exist, so on a fresh cluster run `make up` once first):
+
+```sh
+HEIMDALL_LLM_API_KEY=... infra/llm-api.sh <base-url> <model> [seconds-between-requests]
+make up
+kubectl -n heimdall exec deploy/heimdall -- env | grep HEIMDALL_LLM   # provider, model, URL
+```
+
+With the Secret present `make up` sets the provider to `openai` and removes
+the Ollama relay. The first investigation is the first real call: read the
+`llm_call` events of the incident (`heimdall audit` or the postmortem). If
+the API rejects `response_format`, set `HEIMDALL_LLM_JSON_MODE=false` on the
+Deployment. Free tiers train on what they are sent; that is fine for this lab
+workload only.
 
 If the nodes do not come back healthy, `make down && make up` rebuilds in
 about 5 minutes from the image caches.
@@ -96,34 +125,45 @@ Then check, lightest first:
    (`kubectl set env`, which restarts the pod) and switches it back.
 8. Accuracy for M4 (8 of 10 on s01, s04, s05, s07) is still unmeasured. Do it
    one run at a time.
+9. Latency baselines for per-service thresholds, with the load generator
+   running and no fault injected for an hour:
+   `max_over_time(heimdall:service_latency_ms:p95_rate5m{namespace="boutique"}[1h])`.
+   Then give `HighLatencyP95` in `infra/alert-rules/heimdall-rules.yaml` a
+   threshold per service (about three times its baseline).
 
 ## 2. What is still missing
 
-- **M8, the benchmark runs.** The tooling is built: `bench/run_bench.py`
-  (resumable, `--max-runs` for small batches), `chaos.grader.grade_actions`,
-  `bench/metrics.py`, `bench/report.py`, and a rules baseline that is scored
-  offline by `make results`. Missing: the runs themselves (many hours of
-  cluster and model time, so it needs a plan that fits the laptop rule, or
-  the API provider and a budget), the single-shot baseline, and the unsafe-action test that needs run metrics. The gate-off
-  counterfactual is a switch (`HEIMDALL_POLICY_LOG_ONLY=true`, dry run only)
-  plus `--config heimdall-dev-gate-off` on the runner. The
-  runner's cluster path (`run_one`) has never been executed.
-- **The Anthropic provider has never called the real API.** No key is
-  configured here. First real call: check that the request is accepted as
-  sent (the refusal-fallback beta and the cache markers in particular), and
-  set `HEIMDALL_LLM_FALLBACKS=false` if the fallback is not wanted.
+- **M8, the benchmark runs.** All the tooling is built; only the runs are
+  missing. One run is 8 to 15 minutes of cluster time and about 20 model
+  requests (up to 200,000 tokens). In small batches:
+
+  ```sh
+  uv run python -m bench.run_bench --runs 5 --max-runs 3           # heimdall, dry run
+  uv run python -m bench.run_bench --variant single-shot --runs 5 --max-runs 3
+  uv run python -m bench.run_bench --variant gate-off --runs 5 --max-runs 3
+  uv run python -m bench.run_bench --agent baseline_rules --runs 5 --max-runs 3
+  uv run python -m bench.report
+  ```
+
+  A batch that is stopped continues where it was. A free tier's daily quota
+  decides how many runs fit in a day: when it runs out, investigations end
+  as `unknown` with "LLM failure" as the reason, and those runs must be
+  deleted from `bench/results/<config>/` and redone, not counted. The
+  runner's cluster path (`run_one`, `set_variant`) has never been executed.
+- **No hosted provider has called a real API.** No key is configured here.
+  For Anthropic, check that the request is accepted as sent (the
+  refusal-fallback beta and the cache markers in particular), and set
+  `HEIMDALL_LLM_FALLBACKS=false` if the fallback is not wanted.
 - **Crash recovery is built and unit-tested** (`Pipeline.recover`,
   `test_crash_recovery.py`), but only against fakes. On the cluster: kill the
   pod during a live action and check the incident ends `escalated` with the
   write verified or undone. Recovery runs in the worker thread at startup
   and can take as long as one verification (5 minutes).
 - **Per-service latency thresholds.** `HighLatencyP95` uses 1000 ms for every
-  service. Needs baselines measured on the cluster.
-- `get_rollout_history` does not show the tracker's measured availability
-  yet; only the policy uses it.
+  service. Needs baselines measured on the cluster (section 1, step 9).
 - Hold-out scenarios are deliberately left for someone else to write.
-- More diagrams (incident state machine, safety layers), the demo video and
-  the blog post (M11).
+- The demo video and the blog post (M11). The README now has the detection,
+  remediation, lifecycle and safety-layer sections with diagrams.
 
 ## Where to look
 

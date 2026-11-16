@@ -224,3 +224,44 @@ def test_dependency_graph_matches_the_workload() -> None:
     assert graph.connected("frontend", "cartservice")
     assert not graph.connected("frontend", "redis-cart")
     assert len(graph.services) == 12
+
+
+def test_json_listing_says_when_a_write_reached_the_cluster(
+    db_path: Path, clock: Clock, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    from heimdall import cli
+    from heimdall.core.actions import ActionStatus, ActionStore
+    from heimdall.core.audit import EventType
+    from heimdall.core.models import ActionProposal, ActionType
+
+    manager, audit = make_manager(db_path, clock)
+    incident = manager.ingest(alert("HighErrorRate", "frontend"), confirmed=True)
+    assert incident is not None
+    store = ActionStore(connect(db_path))
+
+    def ran(kind: ActionType, status: ActionStatus) -> None:
+        proposal = ActionProposal(
+            type=kind, namespace="boutique", name="frontend", justification="j", expected_effect="e"
+        )
+        store.record(incident.id, proposal, decision="allow", status=status, detail="")
+        audit.append(
+            EventType.ACTION_EXECUTED,
+            {"proposal": proposal.model_dump(mode="json", exclude_none=True), "status": status},
+            actor="executor",
+            incident_id=incident.id,
+        )
+
+    ran(ActionType.ROLLBACK_DEPLOYMENT, ActionStatus.EXECUTED)
+    executed_at = clock.now
+    clock.advance(minutes=5)
+    ran(ActionType.ROLLBACK_DEPLOYMENT, ActionStatus.UNDONE)
+    ran(ActionType.SCALE_DEPLOYMENT, ActionStatus.DRY_RUN)
+
+    assert cli.main(["incident", "list", "--json", "--db", str(db_path)]) == 0
+    rollback, scale = json.loads(capsys.readouterr().out)[0]["actions"]
+    # The time of the write itself, not of the undo that followed.
+    assert rollback["status"] == "undone"
+    assert datetime.fromisoformat(rollback["executed_at"]) == executed_at
+    assert scale["executed_at"] is None

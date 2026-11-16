@@ -231,6 +231,26 @@ def test_rollout_history_lists_only_this_deployments_revisions(tools: k8s.Kubern
     ]
 
 
+def test_rollout_history_shows_measured_health_as_the_policy_reads_it(
+    tools: k8s.KubernetesTools,
+) -> None:
+    args = k8s.DeploymentArgs(namespace="boutique", name="cartservice")
+
+    def history(measured: dict[int, float]) -> list[str]:
+        tools._availability = lambda namespace, name: measured
+        return [line.split()[-1] for line in tools.get_rollout_history(args).split("\n")]
+
+    assert history({1: 42.5, 2: 0.0}) == [
+        "healthy_minutes_observed=42.5",
+        "healthy_minutes_observed=0.0",
+    ]
+    # Revision 1 is older than anything the tracker saw; revision 2 appeared
+    # while it was watching and was never seen healthy.
+    assert history({2: 0.0})[0] == "healthy_minutes_observed=not_measured"
+    assert history({1: 3.0}) == ["healthy_minutes_observed=3.0", "healthy_minutes_observed=0.0"]
+    assert history({}) == ["healthy_minutes_observed=not_measured"] * 2
+
+
 def test_diff_shows_the_change_and_masks_env_values(tools: k8s.KubernetesTools) -> None:
     out = tools.diff_revisions(
         k8s.DiffArgs(namespace="boutique", name="cartservice", from_revision=1, to_revision=2)

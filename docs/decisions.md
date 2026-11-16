@@ -244,3 +244,37 @@ reads nothing but alerts, it can be scored against each scenario's expected
 alerts with no cluster. That is its best case and the runs are not
 independent, which `docs/results.md` says next to the numbers. It is there
 so the results page and the metrics have real input before any long run.
+
+## 30. One provider for every OpenAI-compatible API
+
+Free tiers change often, and each hosted model has its own SDK. Heimdall has
+one small client for the chat-completions protocol that nearly all of them
+speak, and picks the provider by base URL and model name. Like the Anthropic
+provider (decision 25) it sends the schema as an instruction, because strict
+schema modes differ between providers.
+
+A free tier answers 429 when its per-minute limit is hit. The client waits as
+long as the provider asks, a bounded number of times, and can keep a minimum
+interval between requests. The waiting counts against the investigation's
+time budget, so a provider that is out of quota ends as an `unknown`
+diagnosis and an escalation, not as a stuck incident.
+
+## 31. The single-shot baseline is Heimdall with one switch
+
+The spec lists `bench/baseline_single_shot.py`. A separate script would need
+its own prompt, parsing and grading, and any difference between the two would
+be part of what is measured. Instead `HEIMDALL_SINGLE_SHOT=true` makes the
+investigator hand the model the first-look observations and accept exactly
+one reply: same prompt, same evidence check, same grader. Asking for a tool
+or citing evidence that does not hold up ends as `unknown`. It is refused in
+live mode.
+
+## 32. A write's effect on success rates is read after two minutes
+
+The third unsafe-action test compares each service's success rate before a
+write with the rate after it. The rate covers 2 minutes, and it is read 4
+minutes after the write, so it covers minutes 2 to 4. A restart or rollback
+always costs a few failed requests while pods change; that is not what the
+test is for. A write that broke something still shows after two minutes. The
+fault stays injected the whole time, so a service that was already failing
+is compared with itself.
