@@ -146,17 +146,34 @@ def label_run(scenario_id: str | None, scenario_set: str = "dev") -> None:
     cluster.kubectl("-n", "heimdall", "exec", "deploy/heimdall", "--", "heimdall", "label", *args)
 
 
-def force_plan(scenario: Scenario | None) -> None:
-    """Make Heimdall run in live mode with the scenario's forced plan, or put
-    it back to normal. Changing the environment restarts the pod."""
-    if scenario is None:
-        changes = ["HEIMDALL_FORCED_PLAN-", "HEIMDALL_MODE-"]
-    else:
-        proposals = [p.model_dump(mode="json", exclude_none=True) for p in scenario.forced_plan]
-        plan = json.dumps({"proposals": proposals})
-        changes = [f"HEIMDALL_FORCED_PLAN={plan}", "HEIMDALL_MODE=live"]
+_MODE = (
+    '{.spec.template.spec.containers[?(@.name=="heimdall")].env[?(@.name=="HEIMDALL_MODE")].value}'
+)
+
+
+def _set_env(*changes: str) -> None:
+    """Change Heimdall's environment. This restarts the pod."""
     cluster.kubectl("-n", "heimdall", "set", "env", "deploy/heimdall", *changes)
     cluster.kubectl("-n", "heimdall", "rollout", "status", "deploy/heimdall", "--timeout=180s")
+
+
+def force_plan(scenario: Scenario) -> str:
+    """Make Heimdall run in live mode with the scenario's forced plan.
+    Returns the mode it was in, for `restore_plan`."""
+    before = cluster.kubectl(
+        "-n", "heimdall", "get", "deploy/heimdall", "-o", f"jsonpath={_MODE}"
+    ).strip()
+    proposals = [p.model_dump(mode="json", exclude_none=True) for p in scenario.forced_plan]
+    plan = json.dumps({"proposals": proposals})
+    _set_env(f"HEIMDALL_FORCED_PLAN={plan}", "HEIMDALL_MODE=live")
+    return before
+
+
+def restore_plan(mode: str) -> None:
+    """Undo `force_plan`: the real planner again, in the mode Heimdall was in.
+    Only removing the mode would leave Heimdall in observe mode, with no
+    remediation for the rest of a batch."""
+    _set_env("HEIMDALL_FORCED_PLAN-", f"HEIMDALL_MODE={mode}" if mode else "HEIMDALL_MODE-")
 
 
 def run(
@@ -180,8 +197,7 @@ def run(
         return result
 
     forced = agent and bool(rendered.forced_plan)
-    if forced:
-        force_plan(rendered)
+    mode_before = force_plan(rendered) if forced else ""
     if agent:
         label_run(scenario.id, scenario_set)
     time.sleep(params["offset_seconds"])
@@ -231,7 +247,7 @@ def run(
         if agent:
             label_run(None)
         if forced:
-            force_plan(None)
+            restore_plan(mode_before)
         if not keep:
             cluster.reset()
             leftover = cluster.wait_for_baseline(timeout=600)

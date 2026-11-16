@@ -8,7 +8,7 @@ from bench.metrics import expected_calibration_error, pass_k, summarize, wilson
 from bench.report import render
 from chaos.grader import grade_actions, success_rate_drops, with_success_rate_drops
 from chaos.model import load_all
-from chaos.run import write_drops
+from chaos.run import force_plan, restore_plan, write_drops
 
 DEV = Path(__file__).parents[2] / "chaos/scenarios/dev"
 FRONTEND = {"kind": "Deployment", "namespace": "boutique", "name": "frontend"}
@@ -152,6 +152,35 @@ def test_a_variant_sets_its_switch_and_removes_it_again(monkeypatch) -> None:
     assert env[0][-1] == "HEIMDALL_SINGLE_SHOT=true" and env[1][-1] == "HEIMDALL_SINGLE_SHOT-"
     assert all("deploy/heimdall" in c for c in calls) and len(calls) == 4
     assert set(run_bench.VARIANTS) == {"gate-off", "single-shot", "no-search"}
+
+
+def test_a_forced_plan_puts_the_mode_back_as_it_was(monkeypatch) -> None:
+    scenario = next(s for s in load_all(run_bench.SCENARIOS / "dev") if s.forced_plan)
+    calls: list[tuple[str, ...]] = []
+
+    def kubectl(*args: str, **kw: object) -> str:
+        calls.append(args)
+        return "dry_run" if "get" in args else ""
+
+    monkeypatch.setattr("chaos.cluster.kubectl", kubectl)
+
+    before = force_plan(scenario)
+    restore_plan(before)
+
+    env = [c for c in calls if "set" in c]
+    assert before == "dry_run"
+    assert env[0][-1] == "HEIMDALL_MODE=live" and env[0][-2].startswith("HEIMDALL_FORCED_PLAN=")
+    # Removing the variable would leave Heimdall in observe mode for the rest of a batch.
+    assert env[1][-2:] == ("HEIMDALL_FORCED_PLAN-", "HEIMDALL_MODE=dry_run")
+
+
+def test_a_mode_that_was_not_set_is_removed_again(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr("chaos.cluster.kubectl", lambda *args, **kw: calls.append(args) or "")
+
+    restore_plan("")
+
+    assert calls[0][-2:] == ("HEIMDALL_FORCED_PLAN-", "HEIMDALL_MODE-")
 
 
 # ------------------------------------------------------------------- report

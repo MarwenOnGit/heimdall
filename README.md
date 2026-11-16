@@ -1,14 +1,101 @@
 # Heimdall
 
-An AI SRE agent for Kubernetes. When an alert fires, Heimdall investigates the
-cluster, identifies the root cause with verifiable evidence, and either applies
-a safe mitigation or proposes a fix as a pull request. Safety does not depend
-on the agent behaving: every action passes a policy gate and is enforced again
-by the Kubernetes API server.
+Heimdall is an AI on-call engineer for Kubernetes. When an application
+breaks, it works out why, and fixes it only if the fix passes a series of
+checks that do not trust the AI.
 
-The full design is in [heimdall-spec-v2.md](heimdall-spec-v2.md).
+## Heimdall in one minute
 
-## How it works
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/overview-dark.png">
+  <img alt="Heimdall in one picture" src="docs/img/overview.png">
+</picture>
+
+1. **Something breaks.** A service in the cluster starts crashing, slowing
+   down or returning errors.
+2. **An alert fires.** The monitoring system notices and tells Heimdall.
+3. **Heimdall investigates.** It collects the facts (what is running, what
+   changed, logs, metrics) and asks an AI model to find the cause. The model
+   can only read. It cannot change anything.
+4. **Heimdall plans a fix.** The model picks from a short list of small,
+   reversible fixes: restart, roll back, scale, raise a limit, or open a pull
+   request. There is no "run any command".
+5. **The fix is checked.** If it is not clearly allowed, a human is asked, or
+   the incident is handed to a human.
+6. **The fix is applied and measured.** If the service does not get better,
+   Heimdall undoes the fix and hands over.
+7. **A report is written:** what happened, why, what was done, with the
+   evidence.
+
+The blue arrows are the main path. The grey ones are the helpers Heimdall
+uses along the way.
+
+By default Heimdall only rehearses its fixes (`dry_run` mode): everything
+above happens, but nothing in the cluster changes. `live` mode applies them
+for real, and `observe` mode stops after the diagnosis.
+
+This is a prototype. Every step above is built and unit-tested, but only
+the steps up to the diagnosis have run on a real cluster so far; see
+[Status](#status).
+
+## Why a wrong answer does little harm
+
+An AI model can be confidently wrong, and text in a log can try to trick it.
+So the model is never trusted. It only suggests, and four checks stand
+between its suggestion and the cluster.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/safety-dark.png">
+  <img alt="Four checks before and after every fix" src="docs/img/safety.png">
+</picture>
+
+1. **Proof.** Every claim in the diagnosis must quote data that Heimdall
+   really collected. An invented observation is rejected.
+2. **Rule book.** A policy engine (OPA) decides whether this fix is allowed
+   here: right namespace, sane size, not too many changes, not during a
+   freeze.
+3. **Guard.** Kubernetes itself only lets Heimdall make a few kinds of
+   change to one namespace, and refuses everything else. This check holds
+   even if Heimdall's own code is broken or hijacked.
+4. **Result.** After a fix, Heimdall measures whether the service recovered.
+   If not, it puts things back.
+
+Whenever a check says no, a human takes over. "I don't know" is treated as a
+good answer, and a wrong fix as the worst one.
+
+## Where it runs
+
+Heimdall is built and tested in a small lab that fits on one machine. One
+command, `make up`, creates all of it.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/environment-dark.png">
+  <img alt="The lab Heimdall runs in" src="docs/img/environment.png">
+</picture>
+
+| Piece | What it is for |
+|---|---|
+| kind cluster | A real Kubernetes cluster that runs inside Docker, with three nodes |
+| Online Boutique | A demo web shop made of 12 small services. This is the application Heimdall looks after |
+| Chaos Mesh | Breaks the shop on purpose (crashes, slow network, full disk), so there is something to diagnose |
+| Prometheus | Collects metrics and raises the alerts |
+| Loki | Stores the logs of every service |
+| Gitea and Argo CD | The shop's configuration lives in a git repo (Gitea), and Argo CD deploys whatever git says. A permanent fix is a pull request there |
+| OPA | The rule book: says yes, no, or "ask a human" for each proposed fix |
+| AI model | A local model through Ollama, or a hosted one through an API. It sits outside the cluster |
+
+The blue arrows are the path from a problem to a fix. Dashed arrows are how
+the lab is set up. A few supporting pieces are left out of the picture:
+Alertmanager (delivers the alerts), Linkerd (measures requests between
+services), Alloy (ships the logs) and Grafana (dashboards).
+
+The machine does not have to be a laptop: any Linux machine with Docker,
+16 GB of RAM and 4 cores works, including a rented server.
+
+The rest of this page is the detailed version. The full design is in
+[heimdall-spec-v2.md](heimdall-spec-v2.md).
+
+## How it works, in detail
 
 An alert becomes an action only after passing several independent checks. The
 model proposes; it never acts directly. Every stage in the picture is built
@@ -182,15 +269,6 @@ matters when the model, or Heimdall itself, misbehaves.
 | Argo CD project limits | Argo CD | yes |
 | Signed audit checkpoints outside the database | Gitea repo + webhook | yes (tampering is detectable) |
 
-## Lab environment
-
-Everything runs in one kind cluster on a laptop, built by `make up`.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/environment-dark.png">
-  <img alt="Heimdall lab environment" src="docs/img/environment.png">
-</picture>
-
 ## Status
 
 Built milestone by milestone, following the [spec](heimdall-spec-v2.md). The
@@ -210,7 +288,7 @@ choices that differ from it are recorded in [docs/decisions.md](docs/decisions.m
 | M10 – M11 | not started |
 
 This is a first prototype: the whole path from alert to postmortem exists in
-code and is covered by 446 unit, property and injection tests plus 36 policy
+code and is covered by 448 unit, property and injection tests plus 36 policy
 rule tests. What is missing is time on the cluster. Nothing after M4 has run
 there yet, so expect bugs at the seams when it does.
 
