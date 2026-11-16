@@ -1,5 +1,6 @@
 """The provider-agnostic LLM interface."""
 
+import json
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -35,3 +36,21 @@ class LLM(Protocol):
         """Return the model's reply. With `response_schema`, the reply is JSON
         that follows the schema."""
         ...
+
+
+def extract_json(text: str) -> str:
+    """The JSON object in a reply, without a code fence or words around it."""
+    start, end = text.find("{"), text.rfind("}")
+    return text[start : end + 1] if 0 <= start < end else text.strip()
+
+
+def schema_instruction(schema: dict[str, Any]) -> str:
+    """For providers whose own structured output cannot express Heimdall's
+    schemas: the schema as an instruction. The callers' validation and retry
+    do the enforcing."""
+    # Sorted keys: the same schema must always produce the same bytes, or a
+    # prompt cache would miss on every call.
+    return (
+        "Reply with exactly one JSON object and nothing else: no prose, no code fence. "
+        "It must be valid against this JSON Schema:\n" + json.dumps(schema, sort_keys=True)
+    )

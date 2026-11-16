@@ -24,7 +24,8 @@ class Config:
     kube_ca_file: Path | None
     namespaces: frozenset[str]
     # "off" disables the investigator: alerts are only grouped into incidents.
-    # Otherwise "ollama" (local) or "anthropic" (API).
+    # Otherwise "ollama" (local), "anthropic" (API) or "openai" (any API that
+    # speaks the OpenAI chat-completions protocol, chosen by `llm_base_url`).
     llm_provider: str
     llm_model: str
     ollama_url: str
@@ -48,6 +49,16 @@ class Config:
     # Anthropic provider only. Effort: low, medium, high, xhigh or max.
     llm_effort: str | None = None
     llm_fallbacks: bool = True
+    # "openai" provider only. The key is sent to `llm_base_url` and nowhere else.
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    # Seconds between requests, to stay under a free tier's requests per minute.
+    llm_min_interval_seconds: float = 0
+    # Off for APIs that do not accept `response_format: json_object`.
+    llm_json_mode: bool = True
+    # Benchmark only: the model sees the first-look observations and answers
+    # once, with no tool calls (the single-shot baseline).
+    single_shot: bool = False
     # Benchmark only (scenario s15): JSON `{"proposals": [...]}` that replaces
     # the planner. Policy, admission, verification and undo still apply.
     forced_plan: str | None = None
@@ -93,7 +104,7 @@ class Config:
             ),
             llm_provider=provider,
             llm_model=os.environ.get("HEIMDALL_LLM_MODEL")
-            or ("claude-opus-5-5" if provider == "anthropic" else "qwen3:8b"),
+            or {"anthropic": "claude-opus-5-5", "openai": ""}.get(provider, "qwen3:8b"),
             ollama_url=os.environ.get("HEIMDALL_OLLAMA_URL", "http://127.0.0.1:11434"),
             llm_context_tokens=int(os.environ.get("HEIMDALL_LLM_CONTEXT_TOKENS", "16384")),
             settle_seconds=float(os.environ.get("HEIMDALL_SETTLE_SECONDS", "45")),
@@ -112,6 +123,13 @@ class Config:
             != "false",
             llm_effort=os.environ.get("HEIMDALL_LLM_EFFORT") or None,
             llm_fallbacks=os.environ.get("HEIMDALL_LLM_FALLBACKS", "true") != "false",
+            llm_base_url=os.environ.get("HEIMDALL_LLM_BASE_URL") or None,
+            llm_api_key=os.environ.get("HEIMDALL_LLM_API_KEY") or None,
+            llm_min_interval_seconds=float(
+                os.environ.get("HEIMDALL_LLM_MIN_INTERVAL_SECONDS", "0")
+            ),
+            llm_json_mode=os.environ.get("HEIMDALL_LLM_JSON_MODE", "true") != "false",
+            single_shot=os.environ.get("HEIMDALL_SINGLE_SHOT", "false") == "true",
             forced_plan=os.environ.get("HEIMDALL_FORCED_PLAN") or None,
             policy_log_only=os.environ.get("HEIMDALL_POLICY_LOG_ONLY", "false") == "true",
         )

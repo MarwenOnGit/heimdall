@@ -147,10 +147,21 @@ k -n heimdall create configmap heimdall-policy --from-file="$policy" \
   --dry-run=client -o yaml | k apply -f - >/dev/null
 HEIMDALL_POLICY_HASH="$(sha256sum "$policy" | cut -c1-16)"
 HEIMDALL_IMAGE="$("$ROOT/deploy/build.sh")"
-HEIMDALL_LLM_PROVIDER="$("$ROOT/infra/ollama-bridge.sh")"
-export HEIMDALL_IMAGE HEIMDALL_LLM_PROVIDER HEIMDALL_POLICY_HASH OPA_IMAGE
+# A hosted API, when one was configured with infra/llm-api.sh, comes first:
+# the local model is then not used at all. Otherwise the local model if
+# Ollama is running, otherwise no investigation.
+if k -n heimdall get secret heimdall-llm >/dev/null 2>&1; then
+  HEIMDALL_LLM_PROVIDER=openai
+  HEIMDALL_LLM_MODEL="$(k -n heimdall get secret heimdall-llm -o jsonpath='{.data.model}' | base64 -d)"
+  docker rm -f heimdall-ollama-bridge >/dev/null 2>&1 || true
+  log "LLM: hosted API, model ${HEIMDALL_LLM_MODEL}"
+else
+  HEIMDALL_LLM_PROVIDER="$("$ROOT/infra/ollama-bridge.sh")"
+  HEIMDALL_LLM_MODEL="qwen3:8b"
+fi
+export HEIMDALL_IMAGE HEIMDALL_LLM_PROVIDER HEIMDALL_LLM_MODEL HEIMDALL_POLICY_HASH OPA_IMAGE
 # shellcheck disable=SC2016  # envsubst wants the literal variable names
-envsubst '${HEIMDALL_IMAGE} ${HEIMDALL_LLM_PROVIDER} ${HEIMDALL_POLICY_HASH} ${OPA_IMAGE}' \
+envsubst '${HEIMDALL_IMAGE} ${HEIMDALL_LLM_PROVIDER} ${HEIMDALL_LLM_MODEL} ${HEIMDALL_POLICY_HASH} ${OPA_IMAGE}' \
   <"$ROOT/deploy/heimdall.yaml" |
   k apply -f - >/dev/null
 k -n heimdall rollout status deploy/heimdall --timeout=180s >/dev/null

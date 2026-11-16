@@ -63,6 +63,28 @@ def build_llm(config: Config) -> LLM | None:
         return AnthropicLLM(
             config.llm_model, effort=config.llm_effort, fallbacks=config.llm_fallbacks
         )
+    if config.llm_provider == "openai":
+        from heimdall.llm.openai_compat import OpenAICompatLLM
+
+        missing = [
+            name
+            for name, value in (
+                ("HEIMDALL_LLM_BASE_URL", config.llm_base_url),
+                ("HEIMDALL_LLM_API_KEY", config.llm_api_key),
+                ("HEIMDALL_LLM_MODEL", config.llm_model),
+            )
+            if not value
+        ]
+        if not config.llm_base_url or not config.llm_api_key or missing:
+            raise ValueError(f"the openai provider needs {', '.join(missing)}")
+        return OpenAICompatLLM.connect(
+            config.llm_model,
+            config.llm_base_url,
+            config.llm_api_key,
+            effort=config.llm_effort,
+            json_mode=config.llm_json_mode,
+            min_interval_seconds=config.llm_min_interval_seconds,
+        )
     raise ValueError(f"unknown LLM provider {config.llm_provider!r}")
 
 
@@ -129,6 +151,8 @@ def build_pipeline(
     revisions: RevisionTracker | None = None,
 ) -> Pipeline | None:
     """The remediation pipeline for the configured mode, or None in observe mode."""
+    if config.single_shot and config.mode == "live":
+        raise ValueError("HEIMDALL_SINGLE_SHOT is a benchmark baseline: not allowed in live mode")
     if config.mode == "observe":
         return None
     if config.mode not in ("dry_run", "live"):
@@ -181,7 +205,11 @@ def build_pipeline(
 
 
 def build_investigator(
-    config: Config, audit: AuditLog, llm: LLM, postmortems: PostmortemStore | None = None
+    config: Config,
+    audit: AuditLog,
+    llm: LLM,
+    postmortems: PostmortemStore | None = None,
+    revisions: RevisionTracker | None = None,
 ) -> Investigator:
     kube = read_only_kube(config)
     namespaces = set(config.namespaces)
@@ -190,7 +218,9 @@ def build_investigator(
     prometheus = httpx.Client(base_url=config.prometheus_url, timeout=20)
     loki = httpx.Client(base_url=config.loki_url, timeout=20)
     tools: list[Tool] = [
-        *KubernetesTools(kube, namespaces).tools(),
+        *KubernetesTools(
+            kube, namespaces, availability=revisions.available_minutes if revisions else None
+        ).tools(),
         *PrometheusTools(prometheus, namespaces).tools(),
         *LokiTools(loki, namespaces).tools(),
         *DependencyTools(graph).tools(),
@@ -226,4 +256,5 @@ def build_investigator(
         first_look=first_look(graph, config.namespaces),
         resource_exists=resource_exists,
         not_evidence=NOT_EVIDENCE,
+        single_shot=config.single_shot,
     )

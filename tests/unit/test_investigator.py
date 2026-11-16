@@ -182,6 +182,32 @@ def test_ignoring_the_budget_ends_as_unknown(audit: AuditLog) -> None:
     assert run.diagnosis.root_causes[0].category is RootCauseCategory.UNKNOWN
 
 
+def test_single_shot_answers_from_the_first_look_without_tools(audit: AuditLog) -> None:
+    agent, llm = investigator(
+        audit, [GOOD], single_shot=True, first_look=lambda i: [("metrics", {}), ("history", {})]
+    )
+
+    run = agent.investigate(INCIDENT, ALERTS)
+
+    assert (run.llm_calls, run.tool_calls, run.stopped_because) == (1, 2, "diagnosed")
+    opening = llm.seen[0][1].content
+    assert "No tool calls are available" in opening and "request your first tool" not in opening
+
+
+def test_single_shot_gets_no_second_try(audit: AuditLog) -> None:
+    look = lambda i: [("metrics", {})]  # noqa: E731
+    asked, _ = investigator(audit, [call("pods")], single_shot=True, first_look=look)
+    made_up, _ = investigator(
+        audit, [diagnose([("tc_1", "not in any output")])], single_shot=True, first_look=look
+    )
+
+    for agent, why in ((asked, "single-shot"), (made_up, "could not be backed by evidence")):
+        run = agent.investigate(INCIDENT, ALERTS)
+        assert run.llm_calls == 1 and run.tool_calls == 1
+        assert run.diagnosis.root_causes[0].category is RootCauseCategory.UNKNOWN
+        assert why in run.stopped_because
+
+
 def test_time_budget_is_enforced(audit: AuditLog) -> None:
     ticks = iter(range(0, 10_000, 100))
     agent, _ = investigator(

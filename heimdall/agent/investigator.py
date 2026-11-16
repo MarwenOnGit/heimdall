@@ -119,7 +119,10 @@ class Investigator:
         resource_exists: Callable[[ResourceRef], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
         not_evidence: frozenset[str] = frozenset(),
+        single_shot: bool = False,
     ) -> None:
+        # Benchmark baseline: one answer from the first look, no tool loop.
+        self._single_shot = single_shot
         # Names of tools whose output may guide the search but not back a diagnosis.
         self._not_evidence = not_evidence
         self._llm = llm
@@ -223,14 +226,21 @@ class Investigator:
         ]
         for name, arguments in self._first_look(incident):
             opening.append(self._call_tool(incident, run, name, arguments))
-        opening.append("\nBegin. State your hypotheses and request your first tool call.")
+        if self._single_shot:
+            opening.append(
+                "\nNo tool calls are available. Give your final diagnosis now from these "
+                "observations, or category `unknown`."
+            )
+        else:
+            opening.append("\nBegin. State your hypotheses and request your first tool call.")
         run.transcript = [
             Message(role="system", content=self._system),
             Message(role="user", content="\n".join(opening)),
         ]
 
         invalid_replies = 0
-        final_attempt = False
+        # In single-shot mode the first reply is the only one that counts.
+        final_attempt = self._single_shot
         try:
             while True:
                 step = self._ask(incident, run)
@@ -281,7 +291,11 @@ class Investigator:
                 exhausted = self._remaining(run, started)
                 if exhausted or final_attempt:
                     if final_attempt:
-                        run.stopped_because = exhausted or "budget exhausted"
+                        run.stopped_because = (
+                            "asked for a tool in single-shot mode"
+                            if self._single_shot
+                            else exhausted or "budget exhausted"
+                        )
                         break
                     final_attempt = True
                     run.transcript.append(
