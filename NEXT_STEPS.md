@@ -7,13 +7,13 @@ project up again.
 
 - `main` has M1 to M7, M9, restart recovery and the benchmark tooling.
   Branch **`m8-api-provider-baselines`** adds everything in "What was added
-  last" below and has an open pull request.
+  last" below and is merged (pull request 6).
 - The whole path exists in code: alert → confirmation → incident →
   investigation → plan → policy → approval → execution → verification → undo
   or pull request → postmortem.
 - **Every item that can be done without the cluster is done.** What is left
   is running it (section 1) and measuring it (section 2).
-- 446 unit, property and injection tests and 36 OPA rule tests pass. `ruff`
+- 448 unit, property and injection tests and 36 OPA rule tests pass. `ruff`
   and `mypy` are clean.
 - **Nothing after M4 has run on the cluster.** That is the next job, and it
   will find bugs.
