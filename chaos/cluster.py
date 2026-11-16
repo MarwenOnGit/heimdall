@@ -39,9 +39,10 @@ def kubectl(*args: str, stdin: str | None = None, check: bool = True) -> str:
     return result.stdout
 
 
-def promql(expr: str) -> list[dict[str, Any]]:
-    """Run an instant query and return the result vector."""
-    raw = kubectl("get", "--raw", f"{PROMETHEUS}/api/v1/query?query={quote(expr, safe='')}")
+def promql(expr: str, at: float | None = None) -> list[dict[str, Any]]:
+    """Run an instant query, now or at a Unix time, and return the result vector."""
+    when = "" if at is None else f"&time={at:.0f}"
+    raw = kubectl("get", "--raw", f"{PROMETHEUS}/api/v1/query?query={quote(expr, safe='')}{when}")
     data = json.loads(raw)
     if data.get("status") != "success":
         raise RuntimeError(f"query failed: {expr}: {data}")
@@ -53,6 +54,19 @@ def firing_alerts() -> set[tuple[str, str | None]]:
     """Alerts routed to Heimdall that are firing now, as (alertname, service)."""
     rows = promql('ALERTS{heimdall="true", alertstate="firing"}')
     return {(r["metric"]["alertname"], r["metric"].get("service")) for r in rows}
+
+
+SUCCESS_RATE = f'heimdall:service_success_rate:ratio_rate2m{{namespace="{NAMESPACE}"}}'
+
+
+def success_rates(at: float) -> dict[str, float]:
+    """Each service's success rate over the 2 minutes before `at` (Unix time)."""
+    rates = {}
+    for row in promql(SUCCESS_RATE, at):
+        service, value = row["metric"].get("service"), float(row["value"][1])
+        if service and value == value:  # NaN: no requests in the window
+            rates[service] = value
+    return rates
 
 
 def workload_problems() -> list[str]:

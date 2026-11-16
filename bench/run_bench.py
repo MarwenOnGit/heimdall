@@ -4,6 +4,12 @@
     uv run python -m bench.run_bench --agent baseline_rules --runs 5
     uv run python -m bench.run_bench --agent baseline_rules --offline --runs 10
 
+    uv run python -m bench.run_bench --variant single-shot --runs 5
+
+`--variant` runs Heimdall with one switch changed, for the comparisons on the
+results page. The switch is set on the Deployment before the batch and removed
+after it; each change restarts the pod.
+
 Each run is one result file under bench/results/<config>/. A run that already
 has a file is skipped, so a batch can be stopped and continued. One run takes
 8 to 15 minutes and loads the machine; `--max-runs` stops a batch early.
@@ -24,6 +30,25 @@ from chaos.model import Scenario, load_all
 ROOT = Path(__file__).parents[1]
 RESULTS = ROOT / "bench" / "results"
 SCENARIOS = ROOT / "chaos" / "scenarios"
+
+
+# Comparison name -> the environment that differs from the normal Heimdall.
+VARIANTS: dict[str, dict[str, str]] = {
+    # The gate records its verdict and lets the dry run through.
+    "gate-off": {"HEIMDALL_POLICY_LOG_ONLY": "true"},
+    # Same model, first-look observations, one answer, no tool loop.
+    "single-shot": {"HEIMDALL_SINGLE_SHOT": "true"},
+    "no-search": {"HEIMDALL_SEARCH_PAST_INCIDENTS": "false"},
+}
+
+
+def set_variant(variant: str, on: bool) -> None:
+    """Switch the variant's environment on the Heimdall Deployment on or off."""
+    from chaos import cluster
+
+    changes = [f"{k}={v}" if on else f"{k}-" for k, v in VARIANTS[variant].items()]
+    cluster.kubectl("-n", "heimdall", "set", "env", "deploy/heimdall", *changes)
+    cluster.kubectl("-n", "heimdall", "rollout", "status", "deploy/heimdall", "--timeout=180s")
 
 
 def done(directory: Path) -> set[tuple[str, int]]:
@@ -68,6 +93,7 @@ def main() -> int:
     parser.add_argument("--set", dest="scenario_set", default="dev", choices=["dev", "holdout"])
     parser.add_argument("--runs", type=int, default=5, help="seeds per scenario")
     parser.add_argument("--seed", type=int, default=1, help="first seed")
+    parser.add_argument("--variant", choices=sorted(VARIANTS), help="a heimdall comparison run")
     parser.add_argument("--config", help="name of this configuration; default: <agent>-<set>")
     parser.add_argument("--offline", action="store_true", help="baseline_rules without a cluster")
     parser.add_argument("--max-runs", type=int, help="stop after this many new runs")
@@ -79,7 +105,10 @@ def main() -> int:
         if not args.scenarios or s.id in args.scenarios
     ]
     seeds = list(range(args.seed, args.seed + args.runs))
-    config = args.config or f"{args.agent}-{args.scenario_set}{'-offline' if args.offline else ''}"
+    if args.variant and (args.agent != "heimdall" or args.offline):
+        parser.error("--variant only works with --agent heimdall on the cluster")
+    suffix = f"-{args.variant}" if args.variant else "-offline" if args.offline else ""
+    config = args.config or f"{args.agent}-{args.scenario_set}{suffix}"
     directory = RESULTS / config
 
     if args.offline:
@@ -93,19 +122,31 @@ def main() -> int:
         return 0
 
     finished = done(directory)
-    new = 0
-    for seed in seeds:
-        for scenario in scenarios:
-            if (scenario.id, seed) in finished:
-                continue
-            if args.max_runs is not None and new >= args.max_runs:
-                print(f"stopped after {new} runs (--max-runs)")
-                return 0
+    todo = [
+        (scenario, seed)
+        for seed in seeds
+        for scenario in scenarios
+        if (scenario.id, seed) not in finished
+        # A forced plan replaces the model, so a variant of the model changes nothing.
+        and not (args.variant and scenario.forced_plan)
+    ]
+    if args.max_runs is not None:
+        todo = todo[: args.max_runs]
+    if not todo:
+        print(f"nothing to run; {len(finished)} were already done")
+        return 0
+
+    if args.variant:
+        set_variant(args.variant, on=True)
+    try:
+        for scenario, seed in todo:
             result = run_one(scenario, seed, args.agent, args.scenario_set)
             result.update(agent=args.agent, config=config)
             print(f"{scenario.id} seed {seed}: written to {write(directory, result).name}")
-            new += 1
-    print(f"{new} new runs; {len(finished)} were already done")
+    finally:
+        if args.variant:
+            set_variant(args.variant, on=False)
+    print(f"{len(todo)} new runs; {len(finished)} were already done")
     return 0
 
 
