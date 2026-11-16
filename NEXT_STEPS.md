@@ -7,7 +7,7 @@ project up again.
 
 - `main` has M1 to M7, M9, restart recovery and the benchmark tooling.
   Branch **`m8-api-provider-baselines`** adds everything in "What was added
-  last" below; it is committed locally and not pushed.
+  last" below and has an open pull request.
 - The whole path exists in code: alert → confirmation → incident →
   investigation → plan → policy → approval → execution → verification → undo
   or pull request → postmortem.
