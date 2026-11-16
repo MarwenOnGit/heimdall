@@ -169,9 +169,13 @@ in i04 depends on the model and belongs to the benchmark.
 ## Accepted risks
 
 - The model provider sees redacted cluster data. With the local Ollama
-  provider nothing leaves the machine. With the API provider, redaction is
+  provider nothing leaves the machine. With a hosted provider, redaction is
   the only thing between a workload's logs and a third party, and redaction
-  is pattern-based.
+  is pattern-based. Free tiers usually keep the right to train on what they
+  are sent: acceptable for the lab workload, not for a real one.
+- The hosted provider's key lives in a Secret in Heimdall's namespace and in
+  the process environment. It is sent only to the configured base URL, which
+  must be HTTPS. Anyone who can read Secrets there can use the quota.
 - The audit log stores tool output in full (redacted, not truncated). A
   workload that logs heavily makes the log grow; the tools bound how much
   they fetch, the log does not.
